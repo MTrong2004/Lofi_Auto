@@ -1,0 +1,23 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Project large data files
+data/
+secrets/
+*.db
+*.sqlite
+test_out.mp4
+effect_preview.mp4
+
+# VS Code settings
+.vscode/
