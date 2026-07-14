@@ -141,6 +141,8 @@ def init_session_state() -> None:
         "pollinations_key": getattr(config, "POLLINATIONS_API_KEY", ""),
         "sd_api_url": getattr(config, "SD_LOCAL_API_URL", "http://127.0.0.1:7860"),
         "sd_checkpoint": getattr(config, "SD_LOCAL_CHECKPOINT", "sd_v1.5_anime.safetensors"),
+        "sd_install_dir": "",
+        "sd_mode": "existing",  # "existing" | "app_managed"
         "ai_horde_key": "0000000000",
         "hf_token": "",
         "hf_model_id": "stabilityai/stable-diffusion-xl-base-1.0",
@@ -1242,6 +1244,242 @@ with tab1:
                         st.error(f"🔴 **Lỗi phản hồi từ SD Local:** HTTP {response.status_code}")
             except Exception as e:
                 st.error(f"🔴 **Không thể kết nối đến API:** {e}\n\nVui lòng kiểm tra lại cấu hình kết nối hoặc kết nối mạng.")
+
+    # 4. Stable Diffusion Local Manager & Automated Installer (G3-G4)
+    st.markdown("---")
+    st.markdown("### 🛠️ Trình quản lý & Cài đặt Stable Diffusion Local")
+    
+    from core.sd_installer import SDInstaller
+    from core.sd_process_manager import SDProcessManager
+    from core.sd_health import SDHealthChecker
+
+    # --- Lựa chọn chế độ hoạt động ---
+    sd_mode_choice = st.radio(
+        "Chọn chế độ Stable Diffusion:",
+        options=["📁 Trỏ đến bản đã cài (khuyến nghị)", "🚀 Để App tự động tải & cài đặt"],
+        index=0 if st.session_state.sd_mode == "existing" else 1,
+        horizontal=True,
+        help="Nếu bạn đã có AUTOMATIC1111 WebUI trên máy, chọn 'Trỏ đến bản đã cài'. Nếu chưa có, để App tự cài vào thư mục riêng."
+    )
+    st.session_state.sd_mode = "existing" if "Trỏ" in sd_mode_choice else "app_managed"
+
+    st.markdown("---")
+
+    # ================================================
+    # CHẾ ĐỘ 1: TRỎ ĐẾN BẢN ĐÃ CÀI SẴN
+    # ================================================
+    if st.session_state.sd_mode == "existing":
+        st.markdown("#### 📁 Trỏ đến thư mục AUTOMATIC1111 đã cài sẵn trên máy")
+        st.caption(
+            "Nhập đường dẫn đến thư mục **gốc** của bản AUTOMATIC1111 WebUI mà bạn đã cài. "
+            "App sẽ đọc thông tin, kết nối và dùng server đó để tạo ảnh — không thay đổi bất cứ file nào."
+        )
+
+        existing_path = st.text_input(
+            "Đường dẫn thư mục AUTOMATIC1111:",
+            value=st.session_state.sd_install_dir or "",
+            placeholder="Ví dụ: D:/stable-diffusion-webui  hoặc  C:/AI/automatic1111",
+            help="Thư mục chứa file webui-user.bat hoặc launch.py của AUTOMATIC1111."
+        )
+
+        # Phát hiện tự động cấu trúc thư mục
+        webui_found = False
+        webui_path_obj = Path(existing_path) if existing_path else None
+        if webui_path_obj and webui_path_obj.exists():
+            # Kiểm tra file đặc trưng của A1111
+            has_launch = (webui_path_obj / "launch.py").exists()
+            has_bat = (webui_path_obj / "webui-user.bat").exists()
+            has_webui = (webui_path_obj / "webui.py").exists()
+            webui_found = has_launch or has_bat or has_webui
+
+            if webui_found:
+                st.success(f"✅ Phát hiện cài đặt AUTOMATIC1111 hợp lệ tại `{existing_path}`")
+                detected_items = []
+                if has_bat: detected_items.append("`webui-user.bat`")
+                if has_launch: detected_items.append("`launch.py`")
+                if has_webui: detected_items.append("`webui.py`")
+                st.caption(f"Tìm thấy: {', '.join(detected_items)}")
+            else:
+                st.warning("⚠️ Thư mục tồn tại nhưng không phát hiện cấu trúc AUTOMATIC1111. Hãy kiểm tra lại đường dẫn.")
+        elif existing_path:
+            st.error(f"❌ Đường dẫn `{existing_path}` không tồn tại.")
+
+        # Lưu đường dẫn vào session state và config khi bấm xác nhận
+        col_confirm, col_test = st.columns(2)
+        with col_confirm:
+            if st.button("💾 Lưu đường dẫn & Áp dụng", use_container_width=True, disabled=not webui_found):
+                st.session_state.sd_install_dir = existing_path
+                # Cập nhật sd_api_url nếu muốn thử kết nối mặc định
+                st.session_state.sd_api_url = "http://127.0.0.1:7860"
+                st.success("✅ Đã lưu đường dẫn! App sẽ kết nối tới server SD tại cổng 7860 khi bạn khởi động WebUI.")
+                st.info(
+                    "**Bước tiếp theo:** Hãy tự khởi động server AUTOMATIC1111 theo cách thông thường "
+                    "(chạy `webui-user.bat`), sau đó quay lại đây bấm **Kiểm tra kết nối** bên dưới."
+                )
+        with col_test:
+            if st.button("🔗 Kiểm tra kết nối SD Server", use_container_width=True):
+                import requests as _req
+                api_url = st.session_state.sd_api_url
+                try:
+                    resp = _req.get(f"{api_url}/sdapi/v1/options", timeout=5)
+                    if resp.status_code == 200:
+                        model_name = resp.json().get("sd_model_checkpoint", "Không rõ")
+                        st.success(f"🟢 **SD Server đang chạy!** Model đang dùng: `{model_name}`")
+                    else:
+                        st.error(f"🔴 Server phản hồi lỗi HTTP {resp.status_code}")
+                except Exception as conn_err:
+                    st.error(f"🔴 Không kết nối được: {conn_err}\n\nHãy đảm bảo AUTOMATIC1111 đang chạy và API đã bật (`--api` flag).")
+
+        # Hướng dẫn bật API flag
+        with st.expander("ℹ️ Cách bật API flag trong AUTOMATIC1111", expanded=False):
+            st.markdown("""
+**Bước 1:** Mở file `webui-user.bat` trong thư mục AUTOMATIC1111 bằng Notepad.  
+**Bước 2:** Tìm dòng bắt đầu bằng `set COMMANDLINE_ARGS=` và thêm `--api` vào.  
+
+Ví dụ:
+```batch
+set COMMANDLINE_ARGS=--api --medvram
+```
+**Bước 3:** Lưu file và chạy lại `webui-user.bat`.  
+**Bước 4:** Sau khi khởi động xong, quay lại đây bấm **Kiểm tra kết nối**.
+            """)
+
+    # ================================================
+    # CHẾ ĐỘ 2: APP TỰ QUẢN LÝ CÀI ĐẶT
+    # ================================================
+    else:
+        st.markdown("#### 🚀 Cài đặt tự động Stable Diffusion WebUI (do App quản lý)")
+        st.caption("App sẽ tải mã nguồn AUTOMATIC1111 v1.6.0 (commit chính thức), tạo môi trường Python riêng và quản lý tiến trình — không ảnh hưởng Python hệ thống.")
+
+        install_path_input = st.text_input(
+            "Thư mục đích cài đặt SD:",
+            value=st.session_state.sd_install_dir or "D:/AI/LofiStudioAI",
+            help="App sẽ tạo thư mục này nếu chưa tồn tại. Cần ít nhất 10GB dung lượng trống."
+        )
+
+        # Kiểm tra trạng thái cài đặt hiện hữu
+        state_file_path = Path(install_path_input) / "install_state.json"
+        is_app_installed = False
+        install_state_data = {}
+        if state_file_path.exists():
+            try:
+                with open(state_file_path, "r", encoding="utf-8") as sf:
+                    install_state_data = json.load(sf)
+                    is_app_installed = install_state_data.get("installed", False)
+            except Exception:
+                pass
+
+        if is_app_installed:
+            ver = install_state_data.get("version", "?")
+            st.success(f"✅ Phát hiện bản cài đặt App-managed ({ver}) tại `{install_path_input}`")
+        else:
+            st.info("ℹ️ Chưa có bản cài đặt do App quản lý. Bấm nút bên dưới để bắt đầu.")
+
+        # Preflight Check trước khi cài
+        with st.expander("🩺 Kiểm tra phần cứng trước khi cài đặt", expanded=not is_app_installed):
+            if st.button("Chạy kiểm tra phần cứng", use_container_width=True, key="btn_preflight_managed"):
+                with st.spinner("Đang kiểm tra hệ thống..."):
+                    preflight = SDInstaller.run_preflight(Path(install_path_input))
+                pc1, pc2, pc3, pc4, pc5 = st.columns(5)
+                check_map = {
+                    "os_check": (pc1, "OS"),
+                    "gpu_check": (pc2, "GPU/VRAM"),
+                    "ram_check": (pc3, "RAM"),
+                    "disk_check": (pc4, "Ổ đĩa"),
+                    "write_permission": (pc5, "Quyền ghi")
+                }
+                for key, (col, label) in check_map.items():
+                    status = preflight.get(key, "not_applicable")
+                    with col:
+                        if status == "passed":
+                            st.success(f"✅ {label}")
+                        elif status == "warning":
+                            st.warning(f"⚠️ {label}")
+                        else:
+                            st.error(f"❌ {label}")
+
+                if preflight["overall"] == "passed":
+                    st.success("Hệ thống đủ điều kiện cài đặt tự động!")
+                elif preflight["overall"] == "warning":
+                    st.warning("Hệ thống đạt tối thiểu. Có thể gặp vấn đề về hiệu năng.")
+                else:
+                    st.error("Hệ thống không đủ điều kiện. Vui lòng xem chi tiết lỗi bên dưới.")
+
+                for err in preflight["errors"]:
+                    st.error(f"- {err}")
+                for wrn in preflight["warnings"]:
+                    st.warning(f"- {wrn}")
+
+        if st.button("🚀 Bắt đầu tải & cài đặt tự động", use_container_width=True, key="btn_install_managed"):
+            progress_bar = st.progress(0.0)
+            status_text = st.empty()
+
+            def update_progress(percent, msg):
+                progress_bar.progress(float(percent))
+                status_text.markdown(f"**Trạng thái:** {msg} `({int(float(percent)*100)}%)`")
+
+            try:
+                success = SDInstaller.install(Path(install_path_input), progress_callback=update_progress)
+                if success:
+                    st.session_state.sd_install_dir = install_path_input
+                    st.success("🎉 Cài đặt Stable Diffusion Local WebUI thành công!")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ Cài đặt thất bại: {e}")
+
+        # Bảng điều khiển server (chỉ hiện khi đã cài xong)
+        if is_app_installed:
+            st.markdown("---")
+            st.markdown("#### 🎛️ Bảng điều khiển Server Stable Diffusion")
+            st.caption("Khởi động hoặc dừng server WebUI trên địa chỉ loopback 127.0.0.1 (bảo mật).")
+
+            server_running = install_state_data.get("running", False)
+            server_pid = install_state_data.get("process_identity")
+            server_port = install_state_data.get("configured_port", 7860)
+
+            if server_running:
+                st.success(f"🟢 **Server SD đang hoạt động** — PID: `{server_pid}` | Port: `{server_port}`")
+            else:
+                st.info("⚪ **Server SD đang tắt**")
+
+            c_start, c_stop, c_health = st.columns(3)
+            with c_start:
+                if st.button("🚀 Khởi động Server", use_container_width=True, disabled=server_running, key="btn_start_srv"):
+                    try:
+                        pid = SDProcessManager.start_process(Path(install_path_input), port=7860)
+                        st.session_state.sd_install_dir = install_path_input
+                        st.success(f"Khởi động thành công! PID: {pid}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Lỗi khởi động: {e}")
+            with c_stop:
+                if st.button("🛑 Dừng Server", use_container_width=True, disabled=not server_running, key="btn_stop_srv"):
+                    try:
+                        SDProcessManager.stop_process(Path(install_path_input))
+                        st.success("Đã dừng server thành công.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Lỗi dừng: {e}")
+            with c_health:
+                if st.button("🩺 Health Check", use_container_width=True, key="btn_health_managed"):
+                    with st.spinner("Đang kiểm tra sức khỏe API..."):
+                        rpt_path = Path(install_path_input) / "sd_health_report.json"
+                        report = SDHealthChecker.run_health_check(f"http://127.0.0.1:{server_port}", rpt_path)
+                        if report["generation_check"] == "passed":
+                            st.success("🟢 Health check PASSED — API, Model và render test OK!")
+                        else:
+                            st.error(f"🔴 Health check FAILED: {report.get('error_detail', 'Unknown')}")
+
+            # Log viewer
+            log_file = Path(install_path_input) / "logs" / "webui.log"
+            if log_file.exists():
+                st.markdown("##### 📄 Logs thời gian thực (100 dòng cuối)")
+                try:
+                    with open(log_file, "r", encoding="utf-8", errors="ignore") as lf:
+                        lines = lf.readlines()[-100:]
+                    st.text_area("WebUI Logs", value="".join(lines), height=220, label_visibility="collapsed")
+                except Exception as e:
+                    st.error(f"Không đọc được log: {e}")
 
 # --- TAB 2: MUSIC HUNTER ---
 with tab2:
