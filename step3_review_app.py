@@ -2,6 +2,7 @@
 Bước 3 - Giao diện điều khiển và duyệt quy trình tự động hóa Lo-Fi.
 Chạy bằng: streamlit run step3_review_app.py
 """
+import json
 import random
 from pathlib import Path
 import streamlit as st
