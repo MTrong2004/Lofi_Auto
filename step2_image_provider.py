@@ -245,29 +245,63 @@ class SDLocalProvider(ImageProvider):
 
     def generate(self, prompt: str, out_path: Path) -> Path:
         self._check_hardware_once()
-        final_prompt = normalize_image_prompt(prompt)
-        payload = {
-            "prompt": final_prompt,
-            "negative_prompt": getattr(config, "IMAGE_NEGATIVE_PROMPT", "text, watermark, logo, blurry, low quality"),
-            "steps": getattr(config, "SD_LOCAL_STEPS", 24),
-            "width": getattr(config, "SD_LOCAL_WIDTH", 1024),
-            "height": getattr(config, "SD_LOCAL_HEIGHT", 576),
-            "cfg_scale": getattr(config, "SD_LOCAL_CFG_SCALE", 7),
-            "seed": random.randint(100000, 999999),
-            "override_settings": {"sd_model_checkpoint": config.SD_LOCAL_CHECKPOINT},
-        }
-        response = requests.post(f"{config.SD_LOCAL_API_URL}/sdapi/v1/txt2img", json=payload, timeout=180)
-        response.raise_for_status()
+        
+        # 1. Kiểm tra khả năng từ Registry trước
+        from core.provider_capability import ProviderCapabilityRegistry
+        if not ProviderCapabilityRegistry.has_capability("SDLocalProvider", "txt2img"):
+            # Thử tự chạy check lại xem instance có bật lên chưa
+            from core.sd_adapter import SDAdapter
+            adapter = SDAdapter(config.SD_LOCAL_API_URL)
+            if not adapter.capability_check():
+                raise RuntimeError("Stable Diffusion Local không khả dụng hoặc chưa khởi động.")
 
-        img_data = response.json()["images"][0]
-        if "," in img_data:
-            img_data = img_data.split(",", 1)[1]
-
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        out_path.write_bytes(base64.b64decode(img_data))
-        validate_image_file(out_path)
-        logger.info(f"[SDLocal] Đã tạo ảnh: {out_path.name}")
-        return out_path
+        # 2. Độc quyền nạp model (Exclusive model lease)
+        from core.sd_model_manager import SDModelManager
+        owner_id = f"worker_sd_{os.getpid()}"
+        SDModelManager.acquire_exclusive_model_lease("project_sd", owner_id, lease_seconds=120)
+        
+        try:
+            # 3. Đảm bảo model checkpoint đã được nạp
+            checkpoint = getattr(config, "SD_LOCAL_CHECKPOINT", "")
+            if checkpoint:
+                SDModelManager.load_checkpoint(config.SD_LOCAL_API_URL, checkpoint)
+                
+            # 4. Thực thi sinh ảnh qua SDAdapter
+            from core.sd_adapter import SDAdapter
+            adapter = SDAdapter(config.SD_LOCAL_API_URL)
+            
+            final_prompt = normalize_image_prompt(prompt)
+            steps = getattr(config, "SD_LOCAL_STEPS", 24)
+            width = getattr(config, "SD_LOCAL_WIDTH", 1024)
+            height = getattr(config, "SD_LOCAL_HEIGHT", 576)
+            
+            payload = {
+                "prompt": final_prompt,
+                "negative_prompt": getattr(config, "IMAGE_NEGATIVE_PROMPT", "text, watermark, logo, blurry, low quality"),
+                "steps": steps,
+                "width": width,
+                "height": height,
+                "cfg_scale": getattr(config, "SD_LOCAL_CFG_SCALE", 7),
+                "seed": random.randint(100000, 999999),
+            }
+            
+            img_b64 = adapter.txt2img(payload)
+            
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(base64.b64decode(img_b64))
+            validate_image_file(out_path)
+            
+            # 5. Lưu báo cáo sức khỏe sau khi chạy thành công
+            from core.sd_health import SDHealthChecker
+            health_report_path = config.METADATA_DIR / "sd_health_report.json"
+            SDHealthChecker.run_health_check(config.SD_LOCAL_API_URL, health_report_path)
+            
+            logger.info(f"[SDLocal] Đã tạo ảnh thành công và cập nhật health check: {out_path.name}")
+            return out_path
+            
+        finally:
+            # Giải phóng model lease
+            SDModelManager.release_exclusive_model_lease(owner_id)
 
 
 def scale_image_ffmpeg(input_path: Path, output_path: Path, width: int = 1920, height: int = 1080):

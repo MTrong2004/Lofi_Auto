@@ -233,5 +233,69 @@ class TestCorePlatformV45(unittest.TestCase):
             test_video.unlink(missing_ok=True)
             test_video.with_name(f"{test_video.stem}_manifest.json").unlink(missing_ok=True)
 
+    def test_07_stable_diffusion_gates(self):
+        """Kiểm tra SDAdapter, SDModelManager, SDHealthChecker bằng Mocking (Gate G3/G4)."""
+        from unittest.mock import patch, MagicMock
+        from core.sd_adapter import SDAdapter
+        from core.sd_health import SDHealthChecker
+        from core.sd_model_manager import SDModelManager
+        
+        api_url = "http://127.0.0.1:7860"
+        
+        # Thiết lập các mock responses
+        mock_openapi = {"openapi": "3.0.0", "info": {"title": "Stable Diffusion WebUI API"}}
+        mock_models = [{"title": "sd_v1.5_anime.safetensors [5efc1a7d]", "model_name": "sd_v1.5_anime.safetensors"}]
+        mock_samplers = [{"name": "Euler a"}]
+        mock_options = {"sd_model_checkpoint": "sd_v1.5_anime.safetensors [5efc1a7d]"}
+        mock_txt2img_res = {
+            "images": [
+                "YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE="
+            ]
+        }
+        
+        def mock_request(url, *args, **kwargs):
+            mock_res = MagicMock()
+            mock_res.status_code = 200
+            if "openapi.json" in url:
+                mock_res.json.return_value = mock_openapi
+            elif "sd-models" in url:
+                mock_res.json.return_value = mock_models
+            elif "samplers" in url:
+                mock_res.json.return_value = mock_samplers
+            elif "options" in url:
+                mock_res.json.return_value = mock_options
+            elif "txt2img" in url:
+                mock_res.json.return_value = mock_txt2img_res
+                mock_res.content = b"mock content"
+            return mock_res
+            
+        with patch("requests.get", side_effect=mock_request) as mock_get, \
+             patch("requests.post", side_effect=mock_request) as mock_post:
+             
+            # Test SDAdapter discover và capability checks
+            adapter = SDAdapter(api_url)
+            self.assertTrue(adapter.capability_check())
+            
+            # Test txt2img
+            img_b64 = adapter.txt2img({"prompt": "lofi scenery", "width": 256, "height": 256})
+            self.assertIsNotNone(img_b64)
+            
+            # Test model manager load checkpoint
+            load_ok = SDModelManager.load_checkpoint(api_url, "sd_v1.5_anime")
+            self.assertTrue(load_ok)
+            
+            # Test Health checker
+            import tempfile
+            temp_report_path = Path(tempfile.gettempdir()) / "sd_health_report_suite.json"
+            try:
+                report = SDHealthChecker.run_health_check(api_url, temp_report_path)
+                self.assertEqual(report["api_check"], "passed")
+                self.assertEqual(report["model_load_check"], "passed")
+                self.assertEqual(report["generation_check"], "passed")
+                self.assertTrue(temp_report_path.exists())
+            finally:
+                if temp_report_path.exists():
+                    temp_report_path.unlink()
+
 if __name__ == "__main__":
     unittest.main()

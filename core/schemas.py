@@ -246,6 +246,52 @@ SCHEMAS = {
             "source_path": str,
             "full_hd_path": str
         }
+    },
+    "sd_health_report": {
+        "required": {
+            "schema_name": str,
+            "schema_version": int,
+            "api_check": str,
+            "model_load_check": str,
+            "generation_check": str,
+            "tested_at_utc": str
+        },
+        "optional": {
+            "error_detail": (str, type(None))
+        }
+    },
+    "sd_install_state": {
+        "required": {
+            "schema_name": str,
+            "schema_version": int,
+            "installation_id": str,
+            "ownership_mode": str,
+            "state": str,
+            "installed": bool,
+            "running": bool,
+            "healthy": bool,
+            "ready": bool,
+            "configured_port": int,
+            "bind_host": str,
+            "updated_at_utc": str
+        },
+        "optional": {
+            "distribution_id": (str, type(None)),
+            "version": (str, type(None)),
+            "commit_or_release": (str, type(None)),
+            "adapter_version": (str, type(None)),
+            "install_root": (str, type(None)),
+            "staging_path": (str, type(None)),
+            "startup_profile": (str, type(None)),
+            "last_completed_step": (str, type(None)),
+            "resume_supported": (bool, type(None)),
+            "rollback_version": (str, type(None)),
+            "process_identity": (int, type(None)),
+            "active_model_sha256": (str, type(None)),
+            "health_report_path": (str, type(None)),
+            "health_valid_until_utc": (str, type(None)),
+            "last_error_id": (str, type(None))
+        }
     }
 }
 
