@@ -133,6 +133,15 @@ class SDInstaller:
             "last_completed_step": "prechecking"
         }
         
+        # Tạo thư mục cài đặt trước, sau đó mới ghi state
+        try:
+            install_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as pe:
+            raise SDInstallerError(
+                f"Không có quyền tạo thư mục '{install_dir}'.\n"
+                f"Hãy chọn một thư mục khác mà bạn có quyền ghi, ví dụ: D:/LofiSD hoặc C:/AI/SD."
+            ) from pe
+        
         cls._write_state_atomic(install_dir, state)
         
         try:
@@ -219,7 +228,9 @@ class SDInstaller:
         # Xác thực schema trước khi ghi
         validate_data_schema(state_data, "sd_install_state")
         
-        # Ghi nguyên tử
+        # Đảm bảo thư mục tồn tại
+        install_dir.mkdir(parents=True, exist_ok=True)
+        
         out_path = install_dir / "install_state.json"
         tmp_path = out_path.with_suffix(".tmp")
         
@@ -231,12 +242,17 @@ class SDInstaller:
                 
             os.replace(tmp_path, out_path)
             
-            # Sync thư mục cha
-            parent_fd = os.open(str(install_dir), os.O_RDONLY)
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
+            # Sync thư mục cha — chỉ thực hiện trên Linux/macOS
+            # Windows không hỗ trợ os.fsync() trên handle thư mục (PermissionError)
+            if sys.platform != "win32":
+                try:
+                    parent_fd = os.open(str(install_dir), os.O_RDONLY)
+                    try:
+                        os.fsync(parent_fd)
+                    finally:
+                        os.close(parent_fd)
+                except OSError:
+                    pass  # Directory fsync là best-effort
         except Exception as e:
             logger.error(f"[SDInstaller] Ghi install_state.json thất bại: {e}")
             if tmp_path.exists():
