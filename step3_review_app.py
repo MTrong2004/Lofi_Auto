@@ -1101,28 +1101,108 @@ def render_sd_setup_step():
                 st.error(st.session_state.sd_local_status)
 
     with right:
-        st.markdown("### 3) Cài Stable Diffusion Local")
-        st.info("App không tự cài Stable Diffusion. Bạn cài Automatic1111 riêng, rồi app kết nối qua API local.")
+        st.markdown("### 3) Cài đặt & Kết nối Stable Diffusion Local")
 
-        st.markdown("**Cần cài trên Windows:**")
-        st.markdown("- Python 3.10.6")
-        st.markdown("- Git")
-        st.markdown("- Automatic1111 Stable Diffusion WebUI")
-        st.markdown("- Model SD 1.5 hoặc model anime/lofi nhẹ")
+        from core.sd_installer import SDInstaller
+        from core.sd_process_manager import SDProcessManager
+        from core.sd_health import SDHealthChecker
 
-        st.markdown("**Lệnh tải Automatic1111:**")
-        st.code("git clone https://github.com/AUTOMATIC1111/stable-diffusion-webui.git", language="bash")
+        # Chọn chế độ
+        sd_mode_wiz = st.radio(
+            "Chế độ SD Local:",
+            ["📁 Dùng bản đã cài sẵn", "🚀 Để App tự cài đặt"],
+            index=0 if st.session_state.get("sd_mode", "existing") == "existing" else 1,
+            horizontal=True,
+            key="sd_mode_wizard_radio"
+        )
+        st.session_state.sd_mode = "existing" if "Dùng" in sd_mode_wiz else "app_managed"
 
-        st.markdown("**Chạy lần đầu:**")
-        st.code("cd stable-diffusion-webui\nwebui-user.bat", language="bat")
+        st.markdown("---")
 
-        st.markdown("**Bật API cho app này:**")
-        st.code("webui-user.bat --api --medvram", language="bat")
+        if st.session_state.sd_mode == "existing":
+            # --- Chế độ 1: Trỏ đến bản đã cài ---
+            existing_path = st.text_input(
+                "Đường dẫn thư mục AUTOMATIC1111:",
+                value=st.session_state.get("sd_install_dir", ""),
+                placeholder="Ví dụ: D:/stable-diffusion-webui",
+                key="sd_exist_path_wiz",
+                help="Thư mục chứa webui-user.bat hoặc launch.py"
+            )
 
-        st.markdown("**Nếu máy yếu / VRAM thấp:**")
-        st.code("webui-user.bat --api --lowvram", language="bat")
+            webui_found = False
+            if existing_path:
+                p = Path(existing_path)
+                if p.exists():
+                    webui_found = (p / "launch.py").exists() or (p / "webui-user.bat").exists() or (p / "webui.py").exists()
+                    if webui_found:
+                        st.success(f"✅ Phát hiện AUTOMATIC1111 tại `{existing_path}`")
+                    else:
+                        st.warning("⚠️ Thư mục tồn tại nhưng không tìm thấy cấu trúc AUTOMATIC1111.")
+                else:
+                    st.error(f"❌ Đường dẫn không tồn tại: `{existing_path}`")
 
-        st.warning("Khi SD Local chạy đúng, trình duyệt thường mở WebUI ở http://127.0.0.1:7860. App này sẽ gọi API cùng địa chỉ đó.")
+            col_save, col_ping = st.columns(2)
+            with col_save:
+                if st.button("💾 Lưu & Áp dụng", use_container_width=True, disabled=not webui_found, key="sd_wiz_save"):
+                    st.session_state.sd_install_dir = existing_path
+                    st.session_state.sd_api_url = "http://127.0.0.1:7860"
+                    st.success("Đã lưu! Hãy khởi động WebUI rồi bấm Kiểm tra.")
+            with col_ping:
+                if st.button("🔗 Kiểm tra kết nối", use_container_width=True, key="sd_wiz_ping"):
+                    import requests as _req
+                    try:
+                        r = _req.get(f"{st.session_state.sd_api_url}/sdapi/v1/options", timeout=4)
+                        if r.status_code == 200:
+                            model = r.json().get("sd_model_checkpoint", "?")
+                            st.success(f"🟢 SD đang chạy! Model: `{model}`")
+                            st.session_state.sd_local_status = f"✅ SD Local đang chạy. Model: {model}"
+                        else:
+                            st.error(f"🔴 HTTP {r.status_code}")
+                    except Exception as ce:
+                        st.error(f"🔴 Chưa kết nối được: {ce}")
+
+            with st.expander("ℹ️ Cách bật API flag trong webui-user.bat"):
+                st.code("set COMMANDLINE_ARGS=--api --medvram", language="bat")
+                st.caption("Mở file webui-user.bat → tìm dòng COMMANDLINE_ARGS → thêm --api → lưu → chạy lại.")
+
+        else:
+            # --- Chế độ 2: App tự cài ---
+            install_path_wiz = st.text_input(
+                "Thư mục đích cài đặt SD:",
+                value=st.session_state.get("sd_install_dir", "D:/AI/LofiStudioAI"),
+                key="sd_install_path_wiz",
+                help="Cần ≥10GB trống. App tự tạo thư mục nếu chưa có."
+            )
+
+            state_file_wiz = Path(install_path_wiz) / "install_state.json"
+            is_installed_wiz = False
+            if state_file_wiz.exists():
+                try:
+                    with open(state_file_wiz, "r", encoding="utf-8") as sf:
+                        _s = json.load(sf)
+                        is_installed_wiz = _s.get("installed", False)
+                except Exception:
+                    pass
+
+            if is_installed_wiz:
+                st.success(f"✅ Đã cài đặt SD tại `{install_path_wiz}`")
+            else:
+                st.info("ℹ️ Chưa cài. Bấm nút bên dưới để bắt đầu.")
+
+            if st.button("🚀 Bắt đầu cài đặt tự động", use_container_width=True, key="sd_wiz_install"):
+                pb = st.progress(0.0)
+                st_msg = st.empty()
+                def _prog(pct, msg):
+                    pb.progress(float(pct))
+                    st_msg.markdown(f"**{msg}** `{int(float(pct)*100)}%`")
+                try:
+                    ok = SDInstaller.install(Path(install_path_wiz), progress_callback=_prog)
+                    if ok:
+                        st.session_state.sd_install_dir = install_path_wiz
+                        st.success("🎉 Cài đặt thành công!")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Cài đặt thất bại: {e}")
 
     st.markdown("---")
     col_back, col_next = st.columns([1, 1])
