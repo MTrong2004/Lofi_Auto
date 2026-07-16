@@ -1,3 +1,7 @@
+"""
+Output Verifier Module.
+Validates the structural integrity of final output videos, matches specifications, and generates secure output manifests.
+"""
 import os
 import sys
 import json

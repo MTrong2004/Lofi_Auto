@@ -1,3 +1,7 @@
+"""
+Media Probe Module.
+Uses ffprobe to analyze media streams, retrieve durations, verify codecs, and measure loudness (LUFS) of audio.
+"""
 import subprocess
 import json
 import re

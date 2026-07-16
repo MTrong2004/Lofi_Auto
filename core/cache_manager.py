@@ -1,3 +1,7 @@
+"""
+Cache Manager Module.
+Provides SHA-256 asset content hash caching, validation, deduplication, and database tracking for generated assets.
+"""
 import os
 import sys
 import json

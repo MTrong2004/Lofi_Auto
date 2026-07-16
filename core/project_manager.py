@@ -1,3 +1,20 @@
+"""
+AI FILE NOTE - PROJECT LIFE CYCLE MANAGER
+Chức năng chính:
+- Khởi tạo và quản lý trạng thái/vòng đời của các Project trong hệ thống.
+- Cập nhật tiến trình cho từng module phụ trách (audio, image, render, uploader).
+- Đảm bảo cơ chế lưu metadata an toàn qua cơ chế Atomic Write (ghi tạm rồi đổi tên nguyên tử).
+Đầu vào chính:
+- project_id, cấu hình workflow chi tiết.
+Đầu ra chính:
+- File `project.json` trong thư mục dự án và cập nhật trạng thái SQLite đồng bộ.
+API được file khác sử dụng:
+- Lớp `ProjectManager` và các hàm tĩnh của nó (`create_project()`, `load_project()`, `update_workflow_status()`, v.v.).
+Phụ thuộc quan trọng:
+- core.db, core.schemas, config
+Lưu ý khi sửa:
+- Mọi thao tác ghi file JSON trạng thái dự án phải đi qua `_write_atomic` để bảo toàn dữ liệu tránh hư hỏng file.
+"""
 import os
 import sys
 import json

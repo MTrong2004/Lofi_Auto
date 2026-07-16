@@ -1,3 +1,20 @@
+"""
+AI FILE NOTE - HARDWARE RESOURCE LOCK MANAGER
+Chức năng chính:
+- Cung cấp cơ chế khóa tài nguyên độc quyền (locks) qua SQLite để quản lý GPU/CPU khi nhiều tác vụ song song cùng chạy.
+- Sử dụng cơ chế Fencing Tokens (lớn dần) để phát hiện và ngăn chặn các tiến trình ghi đè xung đột.
+- Tự động kiểm tra sức khỏe tiến trình (qua PID) và dọn dẹp các khóa cũ của tiến trình đã chết (stale locks).
+Đầu vào chính:
+- Tên tài nguyên cần khóa (ví dụ: `gpu`, `cpu`), định danh owner, thời hạn khóa (lease time).
+Đầu ra chính:
+- Fencing token nếu khóa thành công, hoặc trả lỗi `LockAcquisitionError` / Trả về `None` nếu thất bại.
+API được file khác sử dụng:
+- Lớp `LockManager`, `ResourceLock`, `LockAcquisitionError`.
+Phụ thuộc quan trọng:
+- sqlite3, psutil, core.db
+Lưu ý khi sửa:
+- Giữ logic thread-safety của cơ chế khóa SQLite và đảm bảo lock luôn được giải phóng sau khi xong việc (`release_lock`).
+"""
 import os
 import sys
 import time

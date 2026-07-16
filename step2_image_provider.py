@@ -1,11 +1,38 @@
 """
-Bước 2 - Tạo nguyên liệu visual.
-Kiến trúc: interface chung ImageProvider, thử Pollinations trước,
-fallback sang SD local nếu lỗi/timeout.
+AI FILE NOTE - STEP 2: IMAGE PROVIDER AND EFFECT ASSETS
+
+Chức năng chính:
+- Chuẩn hóa prompt và tạo ảnh nền qua nhiều provider online/local.
+- Provider hỗ trợ: Pollinations, AI Horde, Hugging Face, Cloudflare và SD Local.
+- Tự fallback theo IMAGE_PROVIDER_ORDER, kiểm tra file ảnh và upscale Full HD bằng FFmpeg.
+- Xử lý ảnh upload thành 16:9, đăng ký metadata/asset vào SQLite.
+- Quản lý video overlay: liệt kê, tải Pexels, tạo bộ hiệu ứng local và chọn hiệu ứng.
+
+Đầu vào chính:
+- Prompt, provider/config API, ảnh upload, project_id hoặc từ khóa hiệu ứng.
+
+Đầu ra chính:
+- Path ảnh nền 1920x1080, Path video hiệu ứng và metadata tương ứng.
+
+API được file khác sử dụng:
+- Các lớp *Provider và ImageProvider.generate()
+- normalize_image_prompt(), validate_image_file(), scale_image_ffmpeg()
+- prepare_local_background(), get_background_image()
+- list_effect_videos(), download_pexels_effect()
+- create_builtin_effect_pack(), pick_effect_video()
+
+Phụ thuộc quan trọng:
+- requests, config, FFmpeg; SD Local còn phụ thuộc core.sd_manager và API A1111/ComfyUI.
+
+Lưu ý khi sửa:
+- Mọi provider phải trả Path tới ảnh hợp lệ và đi qua validate_image_file().
+- Không đổi kích thước đầu ra 1920x1080 hoặc tên provider nếu chưa cập nhật step3_review_app.py.
+- Giữ cơ chế model lease của SD Local để tránh nhiều tiến trình cùng chiếm model/GPU.
 """
 import base64
 import logging
 import os
+import subprocess
 import random
 import re
 import time
@@ -82,7 +109,7 @@ class PollinationsProvider(ImageProvider):
         if config.POLLINATIONS_API_KEY:
             params["key"] = config.POLLINATIONS_API_KEY
 
-        response = requests.get(url, params=params, timeout=60)
+        response = requests.get(url, params=params, timeout=(10, 60))
         response.raise_for_status()
 
         content_type = response.headers.get("content-type", "").lower()
@@ -104,6 +131,10 @@ class AIHordeProvider(ImageProvider):
 
     def generate(self, prompt: str, out_path: Path) -> Path:
         final_prompt = normalize_image_prompt(prompt)
+        # AI Horde nhận negative prompt qua cú pháp "prompt ### negative"
+        negative = getattr(config, "IMAGE_NEGATIVE_PROMPT", "")
+        if negative:
+            final_prompt = f"{final_prompt} ### {negative}"
         headers = {
             "apikey": self.api_key,
             "Client-Agent": "lofi-automation:1.0:local-app",
@@ -113,10 +144,11 @@ class AIHordeProvider(ImageProvider):
             "params": {
                 "width": 1024,
                 "height": 576,
-                "steps": 24,
+                "steps": 28,
                 "n": 1,
-                "cfg_scale": 7,
-                "sampler_name": "k_euler_a",
+                "cfg_scale": 6.5,
+                "sampler_name": "k_dpmpp_2m",
+                "karras": True,
             },
             "nsfw": False,
             "censor_nsfw": True,
@@ -199,9 +231,11 @@ class HuggingFaceProvider(ImageProvider):
                 "height": 576,
                 "num_inference_steps": 24,
                 "guidance_scale": 7,
+                "negative_prompt": getattr(config, "IMAGE_NEGATIVE_PROMPT", ""),
             },
         }
-        url = f"https://api-inference.huggingface.co/models/{self.model_id}"
+        # Endpoint router mới (api-inference.huggingface.co đã ngừng hoạt động)
+        url = f"https://router.huggingface.co/hf-inference/models/{self.model_id}"
 
         for _ in range(3):
             response = requests.post(url, headers=headers, json=payload, timeout=180)
@@ -219,6 +253,47 @@ class HuggingFaceProvider(ImageProvider):
             raise ValueError(f"Hugging Face không trả về ảnh hợp lệ: {response.text[:300]}")
 
         raise TimeoutError("Hugging Face model đang tải quá lâu, hãy thử lại sau.")
+
+
+class CloudflareWorkersAIProvider(ImageProvider):
+    """Cloudflare Workers AI - SDXL, free tier ~10k neurons/ngày."""
+
+    def generate(self, prompt: str, out_path: Path) -> Path:
+        account_id = getattr(config, "CLOUDFLARE_ACCOUNT_ID", "")
+        token = getattr(config, "CLOUDFLARE_API_TOKEN", "")
+        model = getattr(config, "CLOUDFLARE_IMAGE_MODEL", "@cf/stabilityai/stable-diffusion-xl-base-1.0")
+        if not account_id or not token:
+            raise ValueError("Chưa cấu hình CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN trong .env.")
+
+        final_prompt = normalize_image_prompt(prompt)
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+        payload = {
+            "prompt": final_prompt,
+            "negative_prompt": getattr(config, "IMAGE_NEGATIVE_PROMPT", ""),
+            "width": 1024,
+            "height": 576,
+            "num_steps": 20,
+            "guidance": 7,
+        }
+        response = requests.post(
+            url, headers={"Authorization": f"Bearer {token}"}, json=payload, timeout=120
+        )
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "").lower()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if "image" in content_type:
+            out_path.write_bytes(response.content)
+        else:
+            # Một số model trả JSON {"result": {"image": "<base64>"}}
+            img_b64 = (response.json().get("result") or {}).get("image")
+            if not img_b64:
+                raise ValueError(f"Cloudflare không trả về ảnh hợp lệ: {response.text[:200]}")
+            out_path.write_bytes(base64.b64decode(img_b64))
+
+        validate_image_file(out_path)
+        logger.info(f"[Cloudflare] Đã tạo ảnh: {out_path.name}")
+        return out_path
 
 
 class SDLocalProvider(ImageProvider):
@@ -250,13 +325,13 @@ class SDLocalProvider(ImageProvider):
         from core.provider_capability import ProviderCapabilityRegistry
         if not ProviderCapabilityRegistry.has_capability("SDLocalProvider", "txt2img"):
             # Thử tự chạy check lại xem instance có bật lên chưa
-            from core.sd_adapter import SDAdapter
+            from core.sd_manager import SDAdapter
             adapter = SDAdapter(config.SD_LOCAL_API_URL)
             if not adapter.capability_check():
                 raise RuntimeError("Stable Diffusion Local không khả dụng hoặc chưa khởi động.")
 
         # 2. Độc quyền nạp model (Exclusive model lease)
-        from core.sd_model_manager import SDModelManager
+        from core.sd_manager import SDModelManager
         owner_id = f"worker_sd_{os.getpid()}"
         SDModelManager.acquire_exclusive_model_lease("project_sd", owner_id, lease_seconds=120)
         
@@ -267,7 +342,7 @@ class SDLocalProvider(ImageProvider):
                 SDModelManager.load_checkpoint(config.SD_LOCAL_API_URL, checkpoint)
                 
             # 4. Thực thi sinh ảnh qua SDAdapter
-            from core.sd_adapter import SDAdapter
+            from core.sd_manager import SDAdapter
             adapter = SDAdapter(config.SD_LOCAL_API_URL)
             
             final_prompt = normalize_image_prompt(prompt)
@@ -282,7 +357,11 @@ class SDLocalProvider(ImageProvider):
                 "width": width,
                 "height": height,
                 "cfg_scale": getattr(config, "SD_LOCAL_CFG_SCALE", 7),
+                "sampler_name": getattr(config, "SD_LOCAL_SAMPLER", "DPM++ 2M Karras"),
                 "seed": random.randint(100000, 999999),
+                # Clip skip 2: chuẩn cho checkpoint anime SD1.5, màu/nét đúng style hơn
+                "override_settings": {"CLIP_stop_at_last_layers": 2},
+                "override_settings_restore_afterwards": True,
             }
             
             img_b64 = adapter.txt2img(payload)
@@ -292,7 +371,7 @@ class SDLocalProvider(ImageProvider):
             validate_image_file(out_path)
             
             # 5. Lưu báo cáo sức khỏe sau khi chạy thành công
-            from core.sd_health import SDHealthChecker
+            from core.sd_manager import SDHealthChecker
             health_report_path = config.METADATA_DIR / "sd_health_report.json"
             SDHealthChecker.run_health_check(config.SD_LOCAL_API_URL, health_report_path)
             
@@ -315,6 +394,54 @@ def scale_image_ffmpeg(input_path: Path, output_path: Path, width: int = 1920, h
     ]
     subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
+
+def prepare_local_background(
+    input_path: Path,
+    output_path: Path,
+    zoom_percent: int = 8,
+    target_width: int = 1920,
+    target_height: int = 1080,
+) -> Path:
+    """Cắt giữa theo 16:9, phóng nhẹ để loại viền góc, rồi xuất Full HD."""
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy ảnh upload: {input_path}")
+
+    zoom_percent = max(0, min(int(zoom_percent), 20))
+    keep_ratio = max(0.80, 1.0 - zoom_percent / 100.0)
+    target_ratio = target_width / target_height
+    crop_filter = (
+        f"crop='if(gt(iw/ih,{target_ratio}),ih*{target_ratio},iw)*{keep_ratio}':"
+        f"'if(gt(iw/ih,{target_ratio}),ih,iw/{target_ratio})*{keep_ratio}':"
+        "(iw-ow)/2:(ih-oh)/2,"
+        f"scale={target_width}:{target_height}:flags=lanczos,setsar=1"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-vf", crop_filter,
+        "-frames:v", "1",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "FFmpeg không trả chi tiết").strip().splitlines()
+        raise RuntimeError(f"Không xử lý được ảnh upload: {detail[-1] if detail else 'Không rõ lỗi'}") from exc
+
+    validate_image_file(output_path)
+    return output_path
+
 def get_background_image(index: int = 0, project_id: str = None) -> Path:
     """
     Hàm chính mà step2 expose ra cho main.py.
@@ -332,7 +459,20 @@ def get_background_image(index: int = 0, project_id: str = None) -> Path:
     out_path = config.TEMP_IMAGE_DIR / f"bg_raw_{random.randint(1000, 9999)}.png"
     full_hd_path = config.TEMP_IMAGE_DIR / f"bg_full_hd_{random.randint(1000, 9999)}.png"
 
-    providers = [PollinationsProvider(), AIHordeProvider(), SDLocalProvider()]
+    provider_factories = {
+        "pollinations": PollinationsProvider,
+        "aihorde": lambda: AIHordeProvider(getattr(config, "AI_HORDE_API_KEY", "0000000000")),
+        "huggingface": lambda: HuggingFaceProvider(
+            getattr(config, "HUGGINGFACE_TOKEN", ""),
+            getattr(config, "HUGGINGFACE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0"),
+        ),
+        "cloudflare": CloudflareWorkersAIProvider,
+        "sdlocal": SDLocalProvider,
+    }
+    order = getattr(config, "IMAGE_PROVIDER_ORDER", None) or ["pollinations", "aihorde", "sdlocal"]
+    providers = [provider_factories[name]() for name in order if name in provider_factories]
+    if not providers:
+        providers = [PollinationsProvider(), AIHordeProvider(), SDLocalProvider()]
     last_error = None
     generated_path = None
     used_provider = None
@@ -496,14 +636,53 @@ def download_pexels_effect(query: str, api_key: str = "", max_results: int = 8) 
 
 
 def create_builtin_effect_pack() -> list[Path]:
-    """Tạo vài hiệu ứng mẫu local khi chưa có hiệu ứng đẹp."""
+    """
+    Tạo bộ hiệu ứng code local (nền đen, dùng với blend screen).
+    Kỹ thuật hạt rơi: sinh 1 khung noise tĩnh (select frame 0 + loop) rồi cuộn dọc
+    bằng filter scroll -> hạt có quỹ đạo rơi thật thay vì nhiễu nhấp nháy.
+    Tốc độ cuộn chọn sao cho sau 8s (192 frame) trôi tròn số lần chiều cao khung
+    -> video lặp khít (seamless loop) khi render dùng -stream_loop.
+    """
     import subprocess
     config.EFFECTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Khung noise tĩnh: giữ frame 0, lặp đủ 192 frame, đặt lại timestamp 24fps
+    _static_noise = (
+        "select='eq(n,0)',loop=loop=191:size=1:start=0,setpts=N/(24*TB)"
+    )
+    # 3/192 vòng/frame: mưa rơi ~270px/s; 1/192: tuyết ~90px/s (đều tròn vòng sau 8s)
     effect_specs = {
-        "effect_snow_noise.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='if(gt(random(1),0.985),255,0)':cb=128:cr=128,format=yuv420p",
-        "effect_dust_soft.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='if(gt(random(1),0.995),180,0)':cb=128:cr=128,boxblur=2:1,format=yuv420p",
+        # Mưa: hạt thưa kéo dọc thành vệt (avgblur dọc) + tăng sáng lại, cuộn nhanh
+        "effect_rain_fall.mp4": (
+            "nullsrc=s=1280x720:d=8:r=24,"
+            "geq=lum='if(gt(random(1),0.9975),255,0)':cb=128:cr=128,"
+            f"{_static_noise},"
+            "avgblur=sizeX=1:sizeY=7,lutyuv=y='min(val*10,190)',"
+            "scroll=vertical=0.015625,"
+            "format=yuv420p"
+        ),
+        # Tuyết: bông mềm (blur đều), rơi chậm
+        "effect_snow_fall.mp4": (
+            "nullsrc=s=1280x720:d=8:r=24,"
+            "geq=lum='if(gt(random(1),0.996),255,0)':cb=128:cr=128,"
+            f"{_static_noise},"
+            "avgblur=sizeX=2:sizeY=2,lutyuv=y='min(val*7,210)',"
+            "scroll=vertical=0.00520833,"
+            "format=yuv420p"
+        ),
+        # Bụi: hạt rất thưa, mờ và tối, trôi lơ lửng lên trên
+        "effect_dust_soft.mp4": (
+            "nullsrc=s=1280x720:d=8:r=24,"
+            "geq=lum='if(gt(random(1),0.998),255,0)':cb=128:cr=128,"
+            f"{_static_noise},"
+            "avgblur=sizeX=3:sizeY=3,lutyuv=y='min(val*5,140)',"
+            "scroll=vertical=-0.00520833,"
+            "format=yuv420p"
+        ),
+        # Scanline retro: tĩnh, vốn là hiệu ứng nhân tạo nên giữ nguyên
         "effect_retro_scanline.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='if(eq(mod(Y,6),0),70,0)':cb=128:cr=128,format=yuv420p",
-        "effect_light_film_grain.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='random(1)*55':cb=128:cr=128,format=yuv420p",
+        # Film grain: random mỗi frame là ĐÚNG bản chất grain, giữ nguyên
+        "effect_light_film_grain.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='random(1)*45':cb=128:cr=128,format=yuv420p",
     }
     created = []
     for file_name, lavfi in effect_specs.items():

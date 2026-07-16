@@ -1,3 +1,20 @@
+"""
+AI FILE NOTE - RESOURCE SCHEDULER
+Chức năng chính:
+- Quản lý hàng đợi và lập lịch thực thi các Job render/AI dựa trên tài nguyên khả dụng (CPU/GPU).
+- Xác thực chống trùng lặp job chạy (Idempotency) dựa trên hash định danh tác vụ.
+- Hỗ trợ phân bổ, chiếm dụng tài nguyên độc quyền (lease) và dọn dẹp các Job quá hạn.
+Đầu vào chính:
+- Cấu hình Job (loại job, độ ưu tiên, khóa idempotency, thông số chạy).
+Đầu ra chính:
+- ID của Job được tạo mới và trạng thái cập nhật trong SQLite.
+API được file khác sử dụng:
+- Lớp `ResourceScheduler`, `IdempotencyConflictError`.
+Phụ thuộc quan trọng:
+- core.db, core.lock_manager, sqlite3
+Lưu ý khi sửa:
+- Kiểm tra tính hợp lệ của Idempotency Key cẩn thận để tránh chặn các Job hợp lệ nhưng cùng tên.
+"""
 import os
 import sys
 import json

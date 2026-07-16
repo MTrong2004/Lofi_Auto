@@ -1,3 +1,20 @@
+"""
+AI FILE NOTE - RENDER WORKER PROCESS
+Chức năng chính:
+- Rút các Job từ Scheduler và thực thi tác vụ xử lý đồ họa/render video.
+- Tạo tiến trình con xử lý độc lập và theo dõi mã thoát (exit codes).
+- Hỗ trợ cơ chế hủy tác vụ khẩn cấp (Cancel Job), kết thúc đệ quy cây tiến trình (PID tree) để giải phóng tài nguyên.
+Đầu vào chính:
+- Tên Worker (worker_id), thông số Job được gán.
+Đầu ra chính:
+- Tệp video phân đoạn kết quả, trạng thái Job cập nhật trong DB.
+API được file khác sử dụng:
+- Lớp `RenderWorker`, `JobCancelledError`.
+Phụ thuộc quan trọng:
+- core.resource_scheduler, core.db, psutil, subprocess
+Lưu ý khi sửa:
+- Thao tác kill tiến trình con bắt buộc phải thực hiện đệ quy trên toàn bộ cây tiến trình (`parent.children()`) để không bỏ sót các tiến trình FFmpeg chạy mồ côi.
+"""
 import os
 import sys
 import time

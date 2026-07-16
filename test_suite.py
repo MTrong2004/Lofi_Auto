@@ -236,9 +236,7 @@ class TestCorePlatformV45(unittest.TestCase):
     def test_07_stable_diffusion_gates(self):
         """Kiểm tra SDAdapter, SDModelManager, SDHealthChecker bằng Mocking (Gate G3/G4)."""
         from unittest.mock import patch, MagicMock
-        from core.sd_adapter import SDAdapter
-        from core.sd_health import SDHealthChecker
-        from core.sd_model_manager import SDModelManager
+        from core.sd_manager import SDAdapter, SDHealthChecker, SDModelManager
         
         api_url = "http://127.0.0.1:7860"
         
@@ -297,5 +295,238 @@ class TestCorePlatformV45(unittest.TestCase):
                 if temp_report_path.exists():
                     temp_report_path.unlink()
 
+    def test_08_sd_installer_preflight(self):
+        """Kiểm tra SDInstaller.run_preflight() hoạt động chính xác với các tham số hệ thống giả lập."""
+        from core.sd_manager import SDInstaller
+        from unittest.mock import patch
+        
+        # Test case: Everything passes
+        with patch("sys.platform", "win32"), \
+             patch("shutil.which", return_value="C:\\NVIDIA\\nvidia-smi"), \
+             patch("subprocess.run") as mock_run, \
+             patch("psutil.virtual_memory") as mock_mem:
+             
+            # mock nvidia-smi return (4000 MB VRAM)
+            mock_run.return_value.stdout = "4000\n"
+            # mock RAM (16 GB)
+            mock_mem.return_value.total = 16 * 1024**3
+            mock_mem.return_value.available = 8 * 1024**3
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                res = SDInstaller.run_preflight(Path(temp_dir), port=7860)
+                self.assertIn(res["overall"], ["passed", "warning"])
+                self.assertEqual(res["os_check"], "passed")
+                self.assertEqual(res["gpu_check"], "passed")
+                self.assertEqual(res["ram_check"], "passed")
+
+    def test_09_sd_installer_staging_and_rollback(self):
+        """Kiểm tra quy trình cài đặt qua Staging, Promote thành công và Rollback khi gặp lỗi."""
+        from core.sd_manager import SDInstaller
+        from unittest.mock import patch, MagicMock
+        import json
+        
+        with tempfile.TemporaryDirectory() as base_dir:
+            install_dir = Path(base_dir) / "sd_install"
+            
+            # 1. Test cài đặt thành công (Promotion)
+            with patch("sys.platform", "win32"), \
+                 patch("shutil.which", return_value="mock_path"), \
+                 patch("subprocess.run") as mock_run, \
+                 patch("psutil.virtual_memory") as mock_mem:
+                 
+                mock_run.return_value = MagicMock(returncode=0, stdout="4000\n")
+                mock_mem.return_value.total = 16 * 1024**3
+                
+                # Mock git clone và tạo thư mục để mô phỏng git, venv, requirements
+                def mock_run_side_effect(cmd, *args, **kwargs):
+                    if "clone" in cmd:
+                        # cmd[-1] là staging path của webui
+                        webui_path = Path(cmd[-1])
+                        webui_path.mkdir(parents=True, exist_ok=True)
+                        (webui_path / "launch.py").write_text("launch content")
+                        (webui_path / "requirements.txt").write_text("reqs")
+                        (webui_path / "extensions").mkdir(parents=True, exist_ok=True)
+                    elif "venv" in cmd:
+                        # venv_dir là cmd[-1]
+                        venv_path = Path(cmd[-1])
+                        scripts_path = venv_path / "Scripts"
+                        scripts_path.mkdir(parents=True, exist_ok=True)
+                        (scripts_path / "pip.exe").write_text("pip")
+                    return MagicMock(returncode=0)
+                    
+                mock_run.side_effect = mock_run_side_effect
+                
+                success = SDInstaller.install(install_dir, port=7860)
+                self.assertTrue(success)
+                
+                # Xác minh promotion đã xảy ra: staging đã bị xóa, active folder đã xuất hiện
+                active_webui = install_dir / "stable-diffusion-webui"
+                active_runtime = install_dir / "runtime"
+                self.assertTrue(active_webui.exists())
+                self.assertTrue(active_runtime.exists())
+                self.assertTrue((install_dir / "install_state.json").exists())
+                
+                # Đọc install_state.json và kiểm tra trạng thái
+                with open(install_dir / "install_state.json", "r", encoding="utf-8") as f:
+                    state_data = json.load(f)
+                    self.assertEqual(state_data["state"], "ready")
+                    self.assertTrue(state_data["installed"])
+
+            # 2. Test Rollback khi promote gặp lỗi
+            with patch("sys.platform", "win32"), \
+                 patch("shutil.which", return_value="mock_path"), \
+                 patch("subprocess.run") as mock_run, \
+                 patch("psutil.virtual_memory") as mock_mem, \
+                 patch.object(SDInstaller, "_safe_rename", side_effect=PermissionError("Mock Permission Error")):
+                 
+                mock_run.return_value = MagicMock(returncode=0, stdout="4000\n")
+                mock_run.side_effect = mock_run_side_effect
+                mock_mem.return_value.total = 16 * 1024**3
+                
+                with self.assertRaises(Exception):
+                    SDInstaller.install(install_dir, port=7860)
+
+    def test_10_sd_installer_extension_allowlist(self):
+        """Kiểm tra chức năng lọc Extension Allowlist, vô hiệu hóa các extension lạ."""
+        from core.sd_manager import SDInstaller
+        from unittest.mock import patch, MagicMock
+        
+        with tempfile.TemporaryDirectory() as base_dir:
+            install_dir = Path(base_dir) / "sd_install"
+            
+            with patch("sys.platform", "win32"), \
+                 patch("shutil.which", return_value="mock_path"), \
+                 patch("subprocess.run") as mock_run, \
+                 patch("psutil.virtual_memory") as mock_mem:
+                 
+                mock_run.return_value = MagicMock(returncode=0, stdout="4000\n")
+                mock_mem.return_value.total = 16 * 1024**3
+                
+                def mock_run_side_effect(cmd, *args, **kwargs):
+                    if "clone" in cmd:
+                        webui_path = Path(cmd[-1])
+                        webui_path.mkdir(parents=True, exist_ok=True)
+                        (webui_path / "launch.py").write_text("launch content")
+                        ext_dir = webui_path / "extensions"
+                        ext_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # Tạo 1 extension hợp lệ và 1 extension không hợp lệ
+                        (ext_dir / "sd-webui-controlnet").mkdir(parents=True, exist_ok=True)
+                        (ext_dir / "malicious-extension").mkdir(parents=True, exist_ok=True)
+                        
+                    elif "venv" in cmd:
+                        venv_path = Path(cmd[-1])
+                        scripts_path = venv_path / "Scripts"
+                        scripts_path.mkdir(parents=True, exist_ok=True)
+                        (scripts_path / "pip.exe").write_text("pip")
+                    return MagicMock(returncode=0)
+                    
+                mock_run.side_effect = mock_run_side_effect
+                
+                success = SDInstaller.install(install_dir, port=7860)
+                self.assertTrue(success)
+                
+                # Sau khi promote, kiểm tra extensions trong active folder
+                active_ext_dir = install_dir / "stable-diffusion-webui" / "extensions"
+                self.assertTrue((active_ext_dir / "sd-webui-controlnet").exists())
+                self.assertFalse((active_ext_dir / "malicious-extension").exists())
+                self.assertTrue((active_ext_dir / "malicious-extension.disabled").exists())
+
+    def test_11_audio_normalization_and_vibe(self):
+        """Kiểm tra xử lý chuẩn hóa LUFS, lặp và sinh bản nghe thử (Preview)."""
+        from core.audio_processor import AudioProcessor
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_audio = temp_path / "test_music.m4a"
+            
+            # Sinh file audio giả lập (sine wave 3 giây)
+            cmd_audio = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=1000:duration=3",
+                "-c:a", "aac", "-b:a", "128k",
+                input_audio.as_posix()
+            ]
+            subprocess.run(cmd_audio, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            
+            # 1. Test normalize
+            norm_output = temp_path / "normalized.m4a"
+            AudioProcessor.normalize_audio(input_audio, norm_output, target_lufs=-15.0)
+            self.assertTrue(norm_output.exists())
+            
+            # 2. Test loop
+            loop_output = temp_path / "looped.m4a"
+            AudioProcessor.loop_audio(input_audio, loop_output, target_duration=8.0, crossfade_seconds=1.0)
+            self.assertTrue(loop_output.exists())
+            
+            # 3. Test generate previews
+            # Mượn chính tệp sine làm tiếng ambience giả lập
+            rain_mock = Path("data/effects/rain_ambience.mp3")
+            rain_mock.parent.mkdir(parents=True, exist_ok=True)
+            if not rain_mock.exists():
+                shutil.copy(str(input_audio), str(rain_mock))
+                
+            preview_dir = temp_path / "previews"
+            res = AudioProcessor.generate_previews(input_audio, preview_dir, duration=2.0)
+            self.assertTrue(res["clean"].exists())
+            self.assertTrue(res["light"].exists())
+            self.assertTrue(res["rich"].exists())
+
+    def test_12_image_upscale_fallback(self):
+        """Kiểm tra upscaler tự động fallback sang Lanczos 1920x1080 khi offline/lỗi API."""
+        from core.image_upscaler import ImageUpscaler
+        from PIL import Image
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_img = temp_path / "source_img.png"
+            output_img = temp_path / "upscaled_img.png"
+            
+            # Sinh ảnh gốc nhỏ (960x540)
+            img = Image.new("RGB", (960, 540), color="blue")
+            img.save(input_img, "PNG")
+            
+            # Chạy upscale không có API WebUI -> Phải tự fallback sang Lanczos
+            metadata = ImageUpscaler.upscale_image(input_img, output_img, api_url=None)
+            self.assertTrue(output_img.exists())
+            self.assertEqual(metadata["upscale_method"], "lanczos_fallback")
+            
+            # Đọc lại kích thước để xác nhận phóng to đúng 1920x1080
+            with Image.open(output_img) as up_img:
+                self.assertEqual(up_img.size, (1920, 1080))
+
+    def test_13_parallax_rendering(self):
+        """Kiểm tra phân tách lớp hình ảnh và sinh FFmpeg filter cho Parallax 2.5D."""
+        from core.parallax_processor import ParallaxProcessor
+        from PIL import Image
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_img = temp_path / "source_img.png"
+            layers_dir = temp_path / "layers"
+            
+            # Sinh ảnh gốc 960x540
+            img = Image.new("RGB", (960, 540), color="red")
+            img.save(input_img, "PNG")
+            
+            # 1. Test phân tách lớp
+            manifest = ParallaxProcessor.split_layers(input_img, layers_dir)
+            # Ảnh đỏ phẳng không có chiều sâu -> fallback mask hình học;
+            # ảnh thật sẽ ra "three_layer_depth"
+            self.assertIn(manifest["layer_mode"], ("three_layer_depth", "three_layer_geometric"))
+            self.assertTrue((layers_dir / "background_filled.png").exists())
+            self.assertTrue((layers_dir / "midground.png").exists())
+            self.assertTrue((layers_dir / "foreground.png").exists())
+            self.assertTrue((layers_dir / "layers.json").exists())
+            
+            # 2. Test sinh filter complex cho FFmpeg
+            filter_str = ParallaxProcessor.build_parallax_filter_complex(
+                bg_w=2000, bg_h=1125, start_frame=0, fps=24, period_seconds=30.0
+            )
+            self.assertIn("overlay", filter_str)
+            self.assertIn("sin", filter_str)
+            self.assertIn("cos", filter_str)
+
 if __name__ == "__main__":
     unittest.main()
+

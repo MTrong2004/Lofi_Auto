@@ -134,4 +134,9 @@ def run_check(verbose: bool = True) -> dict:
 
 
 if __name__ == "__main__":
+    import sys
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
     run_check()

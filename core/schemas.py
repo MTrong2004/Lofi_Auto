@@ -1,3 +1,19 @@
+"""
+AI FILE NOTE - SCHEMAS VALIDATION
+Chức năng chính:
+- Định nghĩa 12 cấu trúc schema (dạng JSON-like schema validation) cho dữ liệu hệ thống (projects, tracks, assets, jobs, locks).
+- Kiểm tra tính toàn vẹn và xác thực kiểu dữ liệu (data types, formats, required/optional fields).
+Đầu vào chính:
+- Dữ liệu JSON/Dict cần kiểm tra, tên schema tương ứng.
+Đầu ra chính:
+- Trả về dữ liệu đã được làm sạch, hoặc raise lỗi `SchemaValidationError` nếu vi phạm.
+API được file khác sử dụng:
+- `validate_data_schema()`, `SchemaValidationError`
+Phụ thuộc quan trọng:
+- re, datetime
+Lưu ý khi sửa:
+- Mọi thay đổi trường bắt buộc trong schema phải đồng bộ với SQLite schema và các file logic khác.
+"""
 import re
 from datetime import datetime
 

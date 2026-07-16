@@ -1,3 +1,7 @@
+"""
+Provider Capability Registry Module.
+Tracks the functional capabilities of the various image generation providers (e.g. SD Local, AI Horde, Pollinations).
+"""
 import logging
 
 logger = logging.getLogger("lofi_automation")

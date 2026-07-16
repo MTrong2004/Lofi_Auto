@@ -1,5 +1,33 @@
 """
-Bước 5 - Tự động upload và đặt lịch phát sóng qua YouTube Data API v3.
+AI FILE NOTE - STEP 5: YOUTUBE UPLOADER AND SCHEDULER
+
+Chức năng chính:
+- Xác thực OAuth2 với YouTube Data API v3 và lưu token để tái sử dụng.
+- Sinh title, description, tags và credit từ metadata nhạc của Bước 1.
+- Chọn thời điểm phát theo config.SCHEDULE_HOURS.
+- Upload MP4 theo kiểu resumable, theo dõi phần trăm và trả về YouTube video ID.
+- Có thể đặt privacy thủ công; mặc định private có thể kèm publishAt để lên lịch.
+
+Đầu vào chính:
+- video_path, track_id, video_index và metadata/privacy ghi đè tùy chọn.
+
+Đầu ra chính:
+- Chuỗi YouTube video ID sau khi upload thành công.
+
+API được file khác sử dụng:
+- get_authenticated_service()
+- build_video_metadata(), pick_schedule_time()
+- upload_video()
+
+Phụ thuộc quan trọng:
+- google-auth-oauthlib, google-api-python-client, config, MetadataStore.
+- Cần client_secret.json hợp lệ; token OAuth được lưu tại config.YOUTUBE_TOKEN_FILE.
+
+Lưu ý khi sửa:
+- Không ghi API secret hoặc token trực tiếp vào mã nguồn/log.
+- Phải kiểm tra video_path tồn tại trước khi upload và giữ resumable upload cho file lớn.
+- publishAt chỉ hợp lệ với video private; cần xử lý múi giờ rõ ràng khi đổi logic lịch đăng.
+- Giữ cấu trúc metadata và credit để tránh mất thông tin nguồn nhạc.
 """
 import logging
 import random
@@ -7,7 +35,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import config
-from utils.metadata_store import MetadataStore
+from utils.helpers import MetadataStore
 
 logger = logging.getLogger("lofi_automation")
 store = MetadataStore(config.METADATA_DIR)

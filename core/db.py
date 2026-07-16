@@ -1,3 +1,19 @@
+"""
+AI FILE NOTE - CORE DATABASE
+Chức năng chính:
+- Khởi tạo và quản lý kết nối SQLite Database (`lofi_automation.db`).
+- Định nghĩa cấu trúc DDL và tự động chạy migrations để tạo 8 bảng dữ liệu cốt lõi.
+Đầu vào chính:
+- Đường dẫn DB_PATH cấu hình từ config.
+Đầu ra chính:
+- Đối tượng sqlite3 Connection (`get_db_connection()`), cấu trúc bảng DB được thiết lập.
+API được file khác sử dụng:
+- `get_db_connection()`, `init_db()`
+Phụ thuộc quan trọng:
+- sqlite3, config
+Lưu ý khi sửa:
+- Luôn bật khóa ngoại (`PRAGMA foreign_keys = ON;`) và cấu hình timeout 30s tránh lỗi lock DB trên Windows.
+"""
 import sqlite3
 import os
 import sys

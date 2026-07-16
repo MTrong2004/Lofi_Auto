@@ -18,6 +18,9 @@ secrets/
 *.sqlite
 test_out.mp4
 effect_preview.mp4
+test_nvenc.mp4
+test_verifier_video_suite.mp4
+test_verifier_video_suite_manifest.json
 
 # VS Code settings
 .vscode/
