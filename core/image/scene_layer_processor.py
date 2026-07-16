@@ -11,7 +11,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - Lớp `SceneLayerProcessor`, `SceneLayerPaths`, `SceneLayerError`.
 Phụ thuộc quan trọng:
-- transformers, torch, Pillow (PIL), core.db
+- transformers, torch, Pillow (PIL), core.runtime.db
 Lưu ý khi sửa:
 - Giữ logic feather mặt nạ (`feather_radius`) mịn màng và đảm bảo độ co giãn kích thước chính xác.
 """
@@ -31,7 +31,7 @@ from typing import Any, Iterable
 import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-# Allow execution both as core.scene_layer_processor and as a standalone file.
+# Allow execution both as core.image.scene_layer_processor and as a standalone file.
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 import config
 
@@ -152,7 +152,7 @@ class SceneLayerProcessor:
     def get_scene_dir(cls, project_id: str) -> Path:
         """Return the canonical scene layer directory for a project."""
         try:
-            from core.project_manager import ProjectManager
+            from core.runtime.project_manager import ProjectManager
 
             project_dir = ProjectManager.get_project_dir(project_id)
         except Exception:

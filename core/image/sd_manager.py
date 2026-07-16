@@ -21,9 +21,9 @@ import psutil
 import requests
 
 import config
-from core.lock_manager import LockManager, LockAcquisitionError
-from core.provider_capability import ProviderCapabilityRegistry
-from core.schemas import validate_data_schema
+from core.runtime.lock_manager import LockManager, LockAcquisitionError
+from core.image.provider_capability import ProviderCapabilityRegistry
+from core.runtime.schemas import validate_data_schema
 
 logger = logging.getLogger("lofi_automation")
 

@@ -22,7 +22,7 @@ API được file khác sử dụng:
 - create_builtin_effect_pack(), pick_effect_video()
 
 Phụ thuộc quan trọng:
-- requests, config, FFmpeg; SD Local còn phụ thuộc core.sd_manager và API A1111/ComfyUI.
+- requests, config, FFmpeg; SD Local còn phụ thuộc core.image.sd_manager và API A1111/ComfyUI.
 
 Lưu ý khi sửa:
 - Mọi provider phải trả Path tới ảnh hợp lệ và đi qua validate_image_file().
@@ -322,16 +322,16 @@ class SDLocalProvider(ImageProvider):
         self._check_hardware_once()
         
         # 1. Kiểm tra khả năng từ Registry trước
-        from core.provider_capability import ProviderCapabilityRegistry
+        from core.image.provider_capability import ProviderCapabilityRegistry
         if not ProviderCapabilityRegistry.has_capability("SDLocalProvider", "txt2img"):
             # Thử tự chạy check lại xem instance có bật lên chưa
-            from core.sd_manager import SDAdapter
+            from core.image.sd_manager import SDAdapter
             adapter = SDAdapter(config.SD_LOCAL_API_URL)
             if not adapter.capability_check():
                 raise RuntimeError("Stable Diffusion Local không khả dụng hoặc chưa khởi động.")
 
         # 2. Độc quyền nạp model (Exclusive model lease)
-        from core.sd_manager import SDModelManager
+        from core.image.sd_manager import SDModelManager
         owner_id = f"worker_sd_{os.getpid()}"
         SDModelManager.acquire_exclusive_model_lease("project_sd", owner_id, lease_seconds=120)
         
@@ -342,7 +342,7 @@ class SDLocalProvider(ImageProvider):
                 SDModelManager.load_checkpoint(config.SD_LOCAL_API_URL, checkpoint)
                 
             # 4. Thực thi sinh ảnh qua SDAdapter
-            from core.sd_manager import SDAdapter
+            from core.image.sd_manager import SDAdapter
             adapter = SDAdapter(config.SD_LOCAL_API_URL)
             
             final_prompt = normalize_image_prompt(prompt)
@@ -371,7 +371,7 @@ class SDLocalProvider(ImageProvider):
             validate_image_file(out_path)
             
             # 5. Lưu báo cáo sức khỏe sau khi chạy thành công
-            from core.sd_manager import SDHealthChecker
+            from core.image.sd_manager import SDHealthChecker
             health_report_path = config.METADATA_DIR / "sd_health_report.json"
             SDHealthChecker.run_health_check(config.SD_LOCAL_API_URL, health_report_path)
             
@@ -398,7 +398,7 @@ def scale_image_ffmpeg(input_path: Path, output_path: Path, width: int = 1920, h
 def prepare_local_background(
     input_path: Path,
     output_path: Path,
-    zoom_percent: int = 8,
+    zoom_percent: int = 2,
     target_width: int = 1920,
     target_height: int = 1080,
 ) -> Path:
@@ -450,10 +450,10 @@ def get_background_image(index: int = 0, project_id: str = None) -> Path:
     """
     from datetime import datetime, timezone
     import json
-    from core.db import get_db_connection
-    from core.schemas import validate_data_schema
-    from core.project_manager import ProjectManager
-    from core.cache_manager import CacheManager
+    from core.runtime.db import get_db_connection
+    from core.runtime.schemas import validate_data_schema
+    from core.runtime.project_manager import ProjectManager
+    from core.runtime.cache_manager import CacheManager
     
     prompt = config.IMAGE_PROMPTS[index % len(config.IMAGE_PROMPTS)]
     out_path = config.TEMP_IMAGE_DIR / f"bg_raw_{random.randint(1000, 9999)}.png"
@@ -552,178 +552,13 @@ def get_background_image(index: int = 0, project_id: str = None) -> Path:
     return full_hd_path
 
 
-def _safe_slug(text: str, max_len: int = 60) -> str:
-    """Tạo tên file an toàn từ từ khóa tìm kiếm."""
-    text = (text or "effect").lower().strip()
-    text = re.sub(r"[^a-z0-9_-]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    return (text or "effect")[:max_len]
-
-
-def list_effect_videos() -> list[Path]:
-    """Lấy danh sách file hiệu ứng trong data/effects."""
-    config.EFFECTS_DIR.mkdir(parents=True, exist_ok=True)
-    return sorted(config.EFFECTS_DIR.glob("*.mp4"))
-
-
-def download_pexels_effect(query: str, api_key: str = "", max_results: int = 8) -> Path:
-    """
-    Tải 1 video hiệu ứng từ Pexels về data/effects.
-    Cần Pexels API key. Có thể nhập trong UI hoặc đặt biến môi trường PEXELS_API_KEY.
-    """
-    api_key = (api_key or os.getenv("PEXELS_API_KEY", "")).strip()
-    query = (query or "rain overlay").strip()
-    if not api_key:
-        raise ValueError("Chưa có Pexels API key. Hãy nhập API key Pexels trong giao diện hoặc đặt biến môi trường PEXELS_API_KEY.")
-
-    headers = {"Authorization": api_key}
-    params = {
-        "query": query,
-        "orientation": "landscape",
-        "per_page": max(1, min(int(max_results), 20)),
-    }
-    response = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-    videos = data.get("videos") or []
-    if not videos:
-        raise ValueError(f"Không tìm thấy hiệu ứng online cho từ khóa: {query}")
-
-    best_video_file = None
-    best_video = None
-    for video in videos:
-        video_files = video.get("video_files") or []
-        candidates = [
-            f for f in video_files
-            if f.get("file_type") == "video/mp4" and f.get("link")
-        ]
-        if not candidates:
-            continue
-        candidates.sort(key=lambda f: (
-            abs((f.get("height") or 720) - 720),
-            abs((f.get("width") or 1280) - 1280),
-        ))
-        best_video_file = candidates[0]
-        best_video = video
-        break
-
-    if not best_video_file:
-        raise ValueError("Pexels có kết quả nhưng không có file mp4 phù hợp.")
-
-    slug = _safe_slug(query)
-    video_id = best_video.get("id", random.randint(1000, 9999)) if best_video else random.randint(1000, 9999)
-    out_path = config.EFFECTS_DIR / f"pexels_{slug}_{video_id}.mp4"
-
-    download = requests.get(best_video_file["link"], stream=True, timeout=120)
-    download.raise_for_status()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open("wb") as f:
-        for chunk in download.iter_content(chunk_size=1024 * 512):
-            if chunk:
-                f.write(chunk)
-
-    if not out_path.exists() or out_path.stat().st_size < 1024:
-        raise ValueError("File hiệu ứng tải về bị lỗi hoặc quá nhỏ.")
-
-    credit_path = config.EFFECTS_DIR / "online_effects_credits.txt"
-    photographer = (best_video or {}).get("user", {}).get("name", "Pexels")
-    source_url = (best_video or {}).get("url", "https://www.pexels.com")
-    with credit_path.open("a", encoding="utf-8") as f:
-        f.write(f"{out_path.name} | Video by {photographer} on Pexels | {source_url}\n")
-
-    logger.info(f"[Pexels] Đã tải hiệu ứng online: {out_path.name}")
-    return out_path
-
-
-def create_builtin_effect_pack() -> list[Path]:
-    """
-    Tạo bộ hiệu ứng code local (nền đen, dùng với blend screen).
-    Kỹ thuật hạt rơi: sinh 1 khung noise tĩnh (select frame 0 + loop) rồi cuộn dọc
-    bằng filter scroll -> hạt có quỹ đạo rơi thật thay vì nhiễu nhấp nháy.
-    Tốc độ cuộn chọn sao cho sau 8s (192 frame) trôi tròn số lần chiều cao khung
-    -> video lặp khít (seamless loop) khi render dùng -stream_loop.
-    """
-    import subprocess
-    config.EFFECTS_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Khung noise tĩnh: giữ frame 0, lặp đủ 192 frame, đặt lại timestamp 24fps
-    _static_noise = (
-        "select='eq(n,0)',loop=loop=191:size=1:start=0,setpts=N/(24*TB)"
-    )
-    # 3/192 vòng/frame: mưa rơi ~270px/s; 1/192: tuyết ~90px/s (đều tròn vòng sau 8s)
-    effect_specs = {
-        # Mưa: hạt thưa kéo dọc thành vệt (avgblur dọc) + tăng sáng lại, cuộn nhanh
-        "effect_rain_fall.mp4": (
-            "nullsrc=s=1280x720:d=8:r=24,"
-            "geq=lum='if(gt(random(1),0.9975),255,0)':cb=128:cr=128,"
-            f"{_static_noise},"
-            "avgblur=sizeX=1:sizeY=7,lutyuv=y='min(val*10,190)',"
-            "scroll=vertical=0.015625,"
-            "format=yuv420p"
-        ),
-        # Tuyết: bông mềm (blur đều), rơi chậm
-        "effect_snow_fall.mp4": (
-            "nullsrc=s=1280x720:d=8:r=24,"
-            "geq=lum='if(gt(random(1),0.996),255,0)':cb=128:cr=128,"
-            f"{_static_noise},"
-            "avgblur=sizeX=2:sizeY=2,lutyuv=y='min(val*7,210)',"
-            "scroll=vertical=0.00520833,"
-            "format=yuv420p"
-        ),
-        # Bụi: hạt rất thưa, mờ và tối, trôi lơ lửng lên trên
-        "effect_dust_soft.mp4": (
-            "nullsrc=s=1280x720:d=8:r=24,"
-            "geq=lum='if(gt(random(1),0.998),255,0)':cb=128:cr=128,"
-            f"{_static_noise},"
-            "avgblur=sizeX=3:sizeY=3,lutyuv=y='min(val*5,140)',"
-            "scroll=vertical=-0.00520833,"
-            "format=yuv420p"
-        ),
-        # Scanline retro: tĩnh, vốn là hiệu ứng nhân tạo nên giữ nguyên
-        "effect_retro_scanline.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='if(eq(mod(Y,6),0),70,0)':cb=128:cr=128,format=yuv420p",
-        # Film grain: random mỗi frame là ĐÚNG bản chất grain, giữ nguyên
-        "effect_light_film_grain.mp4": "nullsrc=s=1280x720:d=8:r=24,geq=lum='random(1)*45':cb=128:cr=128,format=yuv420p",
-    }
-    created = []
-    for file_name, lavfi in effect_specs.items():
-        out_path = config.EFFECTS_DIR / file_name
-        if out_path.exists() and out_path.stat().st_size > 1024:
-            created.append(out_path)
-            continue
-        cmd = [
-            "ffmpeg", "-y", "-f", "lavfi", "-i", lavfi,
-            "-t", "8", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(out_path),
-        ]
-        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        created.append(out_path)
-    return created
-
-
-def pick_effect_video() -> Path:
-    """Chọn ngẫu nhiên 1 video hiệu ứng (mưa/bụi/đĩa than) từ thư mục asset tĩnh."""
-    effects = list_effect_videos()
-    if not effects:
-        default_path = config.EFFECTS_DIR / "default_effect.mp4"
-        import subprocess
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "color=c=black:s=1280x720:d=5",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-            str(default_path)
-        ]
-        logger.info(f"Tạo file hiệu ứng mặc định: {' '.join(cmd)}")
-        subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        effects = [default_path]
-    return random.choice(effects)
-
-
 if __name__ == "__main__":
     p_id = "test_step2_prj"
     
     # Khởi tạo database
-    import core.db
-    from core.db import get_db_connection
-    core.db.init_db()
+    import core.runtime.db
+    from core.runtime.db import get_db_connection
+    core.runtime.db.init_db()
     
     # Dọn dẹp trước khi test
     conn = get_db_connection()
@@ -731,7 +566,7 @@ if __name__ == "__main__":
         conn.execute("DELETE FROM projects WHERE project_id = ?;", (p_id,))
     conn.close()
     
-    from core.project_manager import ProjectManager
+    from core.runtime.project_manager import ProjectManager
     ProjectManager.create_project(p_id)
     
     try:
@@ -759,4 +594,3 @@ if __name__ == "__main__":
     p_json = ProjectManager.get_project_json_path(p_id)
     if p_json.exists():
         p_json.unlink()
-

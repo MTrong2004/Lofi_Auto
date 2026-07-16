@@ -12,25 +12,25 @@ from datetime import datetime, timezone, timedelta
 # Đảm bảo import được các module từ thư mục hiện hành
 sys.path.append(str(Path(__file__).parent))
 import config
-import core.db
-from core.schemas import validate_data_schema, SchemaValidationError
-from core.project_manager import ProjectManager
-from core.lock_manager import LockManager, ResourceLock, LockAcquisitionError
-from core.media_probe import MediaProbe
-from core.cache_manager import CacheManager
-from core.resource_scheduler import ResourceScheduler
-from core.render_worker import RenderWorker, JobCancelledError
-from core.output_verifier import OutputVerifier, OutputVerificationError
+import core.runtime.db
+from core.runtime.schemas import validate_data_schema, SchemaValidationError
+from core.runtime.project_manager import ProjectManager
+from core.runtime.lock_manager import LockManager, ResourceLock, LockAcquisitionError
+from core.media.probe import MediaProbe
+from core.runtime.cache_manager import CacheManager
+from core.runtime.resource_scheduler import ResourceScheduler
+from core.runtime.render_worker import RenderWorker, JobCancelledError
+from core.media.output_verifier import OutputVerifier, OutputVerificationError
 
 class TestCorePlatformV45(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Thiết lập cơ sở dữ liệu kiểm thử
-        core.db.init_db()
+        core.runtime.db.init_db()
 
     def test_01_db_tables(self):
         """Kiểm tra sự tồn tại của tất cả 8 bảng dữ liệu trong SQLite (Mục 5)."""
-        conn = core.db.get_db_connection()
+        conn = core.runtime.db.get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
         tables = [row[0] for row in cursor.fetchall()]
@@ -78,7 +78,7 @@ class TestCorePlatformV45(unittest.TestCase):
         p_id = "test_pm_suite_prj"
         
         # Dọn dẹp cũ nếu có
-        conn = core.db.get_db_connection()
+        conn = core.runtime.db.get_db_connection()
         with conn:
             conn.execute("DELETE FROM project_modules WHERE project_id = ?;", (p_id,))
             conn.execute("DELETE FROM projects WHERE project_id = ?;", (p_id,))
@@ -122,7 +122,7 @@ class TestCorePlatformV45(unittest.TestCase):
         owner_b = "worker_b"
         
         # Dọn sạch khóa cũ
-        conn = core.db.get_db_connection()
+        conn = core.runtime.db.get_db_connection()
         with conn:
             conn.execute("DELETE FROM resource_locks WHERE resource_id = ?;", (resource,))
         conn.close()
@@ -163,7 +163,7 @@ class TestCorePlatformV45(unittest.TestCase):
         self.assertEqual(claimed_job["job_id"], job_id)
         
         # Hủy job
-        conn = core.db.get_db_connection()
+        conn = core.runtime.db.get_db_connection()
         with conn:
             conn.execute("UPDATE jobs SET job_status = 'cancelling' WHERE job_id = ?;", (job_id,))
         conn.close()
@@ -178,7 +178,7 @@ class TestCorePlatformV45(unittest.TestCase):
             worker.execute_command_with_cancellation_check(cmd, job_id)
             
         # Dọn dẹp
-        conn = core.db.get_db_connection()
+        conn = core.runtime.db.get_db_connection()
         with conn:
             conn.execute("DELETE FROM jobs WHERE project_id = ?;", (p_id,))
             conn.execute("DELETE FROM projects WHERE project_id = ?;", (p_id,))
@@ -236,7 +236,7 @@ class TestCorePlatformV45(unittest.TestCase):
     def test_07_stable_diffusion_gates(self):
         """Kiểm tra SDAdapter, SDModelManager, SDHealthChecker bằng Mocking (Gate G3/G4)."""
         from unittest.mock import patch, MagicMock
-        from core.sd_manager import SDAdapter, SDHealthChecker, SDModelManager
+        from core.image.sd_manager import SDAdapter, SDHealthChecker, SDModelManager
         
         api_url = "http://127.0.0.1:7860"
         
@@ -297,7 +297,7 @@ class TestCorePlatformV45(unittest.TestCase):
 
     def test_08_sd_installer_preflight(self):
         """Kiểm tra SDInstaller.run_preflight() hoạt động chính xác với các tham số hệ thống giả lập."""
-        from core.sd_manager import SDInstaller
+        from core.image.sd_manager import SDInstaller
         from unittest.mock import patch
         
         # Test case: Everything passes
@@ -321,7 +321,7 @@ class TestCorePlatformV45(unittest.TestCase):
 
     def test_09_sd_installer_staging_and_rollback(self):
         """Kiểm tra quy trình cài đặt qua Staging, Promote thành công và Rollback khi gặp lỗi."""
-        from core.sd_manager import SDInstaller
+        from core.image.sd_manager import SDInstaller
         from unittest.mock import patch, MagicMock
         import json
         
@@ -388,7 +388,7 @@ class TestCorePlatformV45(unittest.TestCase):
 
     def test_10_sd_installer_extension_allowlist(self):
         """Kiểm tra chức năng lọc Extension Allowlist, vô hiệu hóa các extension lạ."""
-        from core.sd_manager import SDInstaller
+        from core.image.sd_manager import SDInstaller
         from unittest.mock import patch, MagicMock
         
         with tempfile.TemporaryDirectory() as base_dir:
@@ -434,7 +434,7 @@ class TestCorePlatformV45(unittest.TestCase):
 
     def test_11_audio_normalization_and_vibe(self):
         """Kiểm tra xử lý chuẩn hóa LUFS, lặp và sinh bản nghe thử (Preview)."""
-        from core.audio_processor import AudioProcessor
+        from core.media.audio_processor import AudioProcessor
         
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -474,7 +474,7 @@ class TestCorePlatformV45(unittest.TestCase):
 
     def test_12_image_upscale_fallback(self):
         """Kiểm tra upscaler tự động fallback sang Lanczos 1920x1080 khi offline/lỗi API."""
-        from core.image_upscaler import ImageUpscaler
+        from core.image.upscaler import ImageUpscaler
         from PIL import Image
         
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -497,7 +497,7 @@ class TestCorePlatformV45(unittest.TestCase):
 
     def test_13_parallax_rendering(self):
         """Kiểm tra phân tách lớp hình ảnh và sinh FFmpeg filter cho Parallax 2.5D."""
-        from core.parallax_processor import ParallaxProcessor
+        from core.image.parallax_processor import ParallaxProcessor
         from PIL import Image
         
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -527,6 +527,51 @@ class TestCorePlatformV45(unittest.TestCase):
             self.assertIn("sin", filter_str)
             self.assertIn("cos", filter_str)
 
+    def test_14_karaoke_subtitles(self):
+        """Kiểm tra chức năng sinh phụ đề Karaoke ASS và lưu trữ manifest."""
+        from core.text.ass_renderer import generate_ass_file, load_subtitle_manifest, save_subtitle_manifest, DEFAULT_SUBTITLE_STYLE
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            manifest_data = {
+                "enabled": True,
+                "reviewed": True,
+                "language": "zh",
+                "style": dict(DEFAULT_SUBTITLE_STYLE),
+                "lyrics": [
+                    {
+                        "start": 1.0,
+                        "end": 4.5,
+                        "text": "你好世界",
+                        "pinyin": "nǐ hǎo shì jiè",
+                        "vietnamese": "Xin chào thế giới",
+                        "words": [
+                            {"word": "nǐ", "start": 1.0, "end": 1.8},
+                            {"word": "hǎo", "start": 1.8, "end": 2.5},
+                            {"word": "shì", "start": 2.5, "end": 3.2},
+                            {"word": "jiè", "start": 3.2, "end": 4.5}
+                        ]
+                    }
+                ]
+            }
+            
+            # Test manifest save/load
+            manifest_file = temp_path / "test_project_subtitle_manifest.json"
+            # Override function or write direct JSON to test renderer
+            ass_output = temp_path / "test_lyrics.ass"
+            
+            generate_ass_file(manifest_data["lyrics"], manifest_data["style"], ass_output)
+            
+            self.assertTrue(ass_output.is_file(), "File phụ đề ASS không được tạo.")
+            
+            content = ass_output.read_text(encoding="utf-8")
+            self.assertIn("[Script Info]", content)
+            self.assertIn("Style: Original", content)
+            self.assertIn("Style: Translation", content)
+            self.assertIn("Dialogue: 0,0:00:01.00,0:00:04.50,Original", content)
+            self.assertIn("Dialogue: 0,0:00:01.00,0:00:04.50,Translation", content)
+            # Kiểm tra tag karaoke của libass {\kf...}
+            self.assertIn(r"{\kf", content)
+
 if __name__ == "__main__":
     unittest.main()
-

@@ -1,16 +1,17 @@
 """
-Điều phối toàn bộ pipeline: Bước 1 -> 2 -> (3: duyệt tay qua Streamlit) -> 4 -> 5.
+Điều phối toàn bộ pipeline: Bước 1 -> 2 -> (Duyệt qua Streamlit) -> 3 -> 4 -> 5.
 Chạy bởi Cron Job / Task Scheduler vào khung giờ 1h-5h sáng.
 
-Lưu ý: main.py này giả định Bước 3 (duyệt) đã được thực hiện riêng qua
-`streamlit run step3_review_app.py`. Muốn tự động hoàn toàn (bỏ qua duyệt tay),
-xóa lời gọi Bước 3 và để pipeline chạy thẳng 1 -> 2 -> 4 -> 5.
+Lưu ý: main.py này giả định việc duyệt đã được thực hiện riêng qua
+`streamlit run review_app.py`. Muốn tự động hoàn toàn (bỏ qua duyệt tay),
+xóa lời gọi duyệt và để pipeline chạy thẳng 1 -> 2 -> 3 -> 4 -> 5.
 """
 import logging
 
 import config
 import step1_music_hunter
 import step2_image_provider
+import step3_effect_provider
 import step4_render
 import step5_uploader
 
@@ -34,11 +35,11 @@ def run_pipeline_once(video_index: int):
     logger.info(f"=== Bắt đầu video #{video_index} ===")
 
     from datetime import datetime, timezone
-    import core.db
-    from core.project_manager import ProjectManager
+    import core.runtime.db
+    from core.runtime.project_manager import ProjectManager
     
     # 1. Khởi tạo DB
-    core.db.init_db()
+    core.runtime.db.init_db()
     
     # 2. Tạo mã dự án ngẫu nhiên và đăng ký
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -47,13 +48,32 @@ def run_pipeline_once(video_index: int):
 
     audio_result = step1_music_hunter.run_step1(project_id=project_id)
     image_path = step2_image_provider.get_background_image(index=video_index, project_id=project_id)
-    effect_path = step2_image_provider.pick_effect_video()
+    effect_path = step3_effect_provider.pick_effect_video()
+
+    text_profile = None
+    if getattr(config, "TEXT_EFFECT_AI_ENABLED", True):
+        try:
+            from core.text.effect_manifest import load_text_profile, save_text_profile
+            from core.text import provider as text_effect_provider
+            text_profile = load_text_profile(project_id)
+            if not text_profile:
+                logger.info("Đang sinh gợi ý chữ động bằng AI...")
+                text_profile = text_effect_provider.build_ai_text_profile(
+                    track=audio_result,
+                    music_tags=[],
+                    image_context=image_path.name,
+                    content="",
+                )
+                save_text_profile(project_id, text_profile)
+        except Exception as exc:
+            logger.warning(f"Không tạo được profile chữ động tự động: {exc}")
 
     final_video = step4_render.run_step4(
         project_id=project_id,
         audio_path=audio_result["audio_path"],
         image_path=image_path,
         effect_path=effect_path,
+        text_profile=text_profile,
     )
 
     if not getattr(config, "ENABLE_YOUTUBE_UPLOAD", True):
@@ -104,5 +124,3 @@ if __name__ == "__main__":
             step1_music_hunter.store.is_track_used = original_is_track_used
     else:
         run_batch()
-
-

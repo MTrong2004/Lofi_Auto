@@ -11,7 +11,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - Lớp `LockManager`, `ResourceLock`, `LockAcquisitionError`.
 Phụ thuộc quan trọng:
-- sqlite3, psutil, core.db
+- sqlite3, psutil, core.runtime.db
 Lưu ý khi sửa:
 - Giữ logic thread-safety của cơ chế khóa SQLite và đảm bảo lock luôn được giải phóng sau khi xong việc (`release_lock`).
 """
@@ -27,7 +27,7 @@ import psutil
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.db import get_db_connection
+from core.runtime.db import get_db_connection
 
 class LockAcquisitionError(Exception):
     """Lỗi khi không thể chiếm khóa tài nguyên do khóa đang bận hoặc tranh chấp."""
@@ -317,8 +317,8 @@ class ResourceLock:
 
 if __name__ == "__main__":
     # Test nhanh Lock & Heartbeat
-    import core.db
-    core.db.init_db()
+    import core.runtime.db
+    core.runtime.db.init_db()
 
     res_type = "project"
     res_id = "test_lock_prj"

@@ -11,7 +11,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - Lớp `AudioProcessor`, `AudioProcessorError`.
 Phụ thuộc quan trọng:
-- FFmpeg, config, core.media_probe
+- FFmpeg, config, core.media.probe
 Lưu ý khi sửa:
 - Đảm bảo tham số lọc tần số của lowpass và compressor được tinh chỉnh để tránh vỡ âm hoặc méo tiếng quá mức.
 """
@@ -23,7 +23,7 @@ import logging
 import math
 from pathlib import Path
 import config
-from core.media_probe import MediaProbe
+from core.media.probe import MediaProbe
 
 logger = logging.getLogger("lofi_automation")
 

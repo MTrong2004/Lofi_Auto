@@ -11,7 +11,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - Lớp `RenderWorker`, `JobCancelledError`.
 Phụ thuộc quan trọng:
-- core.resource_scheduler, core.db, psutil, subprocess
+- core.runtime.resource_scheduler, core.runtime.db, psutil, subprocess
 Lưu ý khi sửa:
 - Thao tác kill tiến trình con bắt buộc phải thực hiện đệ quy trên toàn bộ cây tiến trình (`parent.children()`) để không bỏ sót các tiến trình FFmpeg chạy mồ côi.
 """
@@ -27,8 +27,8 @@ import psutil
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.db import get_db_connection
-from core.resource_scheduler import ResourceScheduler
+from core.runtime.db import get_db_connection
+from core.runtime.resource_scheduler import ResourceScheduler
 
 class JobCancelledError(Exception):
     """Lỗi ném ra khi công việc bị hủy giữa chừng."""
@@ -224,8 +224,8 @@ class RenderWorker:
 
 if __name__ == "__main__":
     # Test nhanh Worker và Khả năng Hủy
-    import core.db
-    core.db.init_db()
+    import core.runtime.db
+    core.runtime.db.init_db()
     
     p_id = "test_wrk_prj"
     conn = get_db_connection()
@@ -234,7 +234,7 @@ if __name__ == "__main__":
         conn.execute("DELETE FROM projects WHERE project_id = ?;", (p_id,))
     conn.close()
     
-    from core.project_manager import ProjectManager
+    from core.runtime.project_manager import ProjectManager
     ProjectManager.create_project(p_id)
     
     # 1. Gửi test job

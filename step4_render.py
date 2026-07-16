@@ -18,16 +18,21 @@ API được file khác sử dụng:
 - build_effect_preview()
 - render_video_segment(), process_audio_master()
 - run_step4()
+- detect_best_encoder()
 - check_disk_space(), parse_bitrate_to_bps()
 
 Phụ thuộc quan trọng:
-- FFmpeg/ffprobe, config, MediaProbe, OutputVerifier, ProjectManager, CacheManager và AudioProcessor.
+- FFmpeg/ffprobe, config, MediaProbe, OutputVerifier, ProjectManager, CacheManager, AudioProcessor
+  và core/effect_compositor (filter builder dùng chung cho preview lẫn render cuối).
 
 Lưu ý khi sửa:
-- Giữ chữ ký build_effect_preview() và run_step4() vì step3_review_app.py gọi trực tiếp.
+- Giữ chữ ký build_effect_preview() và run_step4() vì review_app.py gọi trực tiếp;
+  effect_settings là tham số tùy chọn, mặc định giữ hành vi cũ (overlay nền đen).
+- Chuỗi filter overlay phải đi qua core/effect_compositor.build_filter_complex();
+  không viết chuỗi filter riêng để preview và render cuối không lệch nhau.
+- Encoder: None/"auto" sẽ gọi detect_best_encoder() (test encode NVENC thật, cache theo tiến trình).
 - Không bỏ callback tiến độ hoặc thay thang percent 0.0-1.0 nếu chưa sửa UI.
 - Không thay đổi quy trình segment/concat, fencing token hoặc manifest nếu chưa kiểm thử video dài.
-- Khi đổi encoder phải giữ fallback CPU và kiểm tra tương thích GPU/NVENC.
 """
 import os
 import sys
@@ -46,14 +51,50 @@ from datetime import datetime, timezone
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.db import get_db_connection
-from core.media_probe import MediaProbe
-from core.output_verifier import OutputVerifier
-from core.project_manager import ProjectManager
-from core.cache_manager import CacheManager
+from core.runtime.db import get_db_connection
+from core.media.probe import MediaProbe
+from core.media.output_verifier import OutputVerifier
+from core.runtime.project_manager import ProjectManager
+from core.runtime.cache_manager import CacheManager
+from core.effects.compositor import build_filter_complex, normalize_effect_settings
 
 logger = logging.getLogger("lofi_automation")
-RENDERER_VERSION = "2026.07.16-r4.0"
+RENDERER_VERSION = "2026.07.16-r5.0"
+
+# Kết quả dò NVENC được cache theo tiến trình để không test lại mỗi segment.
+_ENCODER_CACHE: dict[str, str] = {}
+
+
+def detect_best_encoder(force_refresh: bool = False) -> str:
+    """
+    Dò GPU bằng một lần encode thử NVENC thật (không tin danh sách -encoders,
+    vì FFmpeg build kèm NVENC cả trên máy không có GPU NVIDIA).
+    Máy có GPU trả về h264_nvenc, không thì libx264.
+    """
+    if not force_refresh and "encoder" in _ENCODER_CACHE:
+        return _ENCODER_CACHE["encoder"]
+    encoder = "libx264"
+    if shutil.which("ffmpeg") is not None:
+        preferred = getattr(config, "NVENC_CODEC", "h264_nvenc")
+        try:
+            probe = subprocess.run(
+                [
+                    "ffmpeg", "-v", "error", "-f", "lavfi",
+                    "-i", "color=c=black:s=256x144:d=0.3:r=24",
+                    "-frames:v", "3", "-c:v", preferred, "-f", "null", "-",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+            if probe.returncode == 0:
+                encoder = preferred
+        except Exception:
+            pass
+    _ENCODER_CACHE["encoder"] = encoder
+    logger.info(f"[Render] Encoder tự chọn: {encoder} ({'GPU NVENC' if encoder != 'libx264' else 'CPU libx264'})")
+    return encoder
 
 def parse_bitrate_to_bps(bitrate_str: str) -> int:
     """Chuyển đổi chuỗi bitrate như '2800k' hoặc '320k' sang bps (bit per second)."""
@@ -78,7 +119,7 @@ def check_disk_space(output_dir: Path, duration: float, video_bitrate: str, audi
     estimated_bytes = int((total_bps * duration / 8.0) * 2.2)
     
     total, used, free = shutil.disk_usage(str(output_dir.parent))
-    print(f"[Render Precheck] Free space: {free / (1024**3):.2f} GB, Estimated space needed: {estimated_bytes / (1024**3):.2f} GB")
+    logger.info(f"[Render Precheck] Free space: {free / (1024**3):.2f} GB, Estimated space needed: {estimated_bytes / (1024**3):.2f} GB")
     
     if free < estimated_bytes:
         return False
@@ -115,14 +156,130 @@ def _notify_progress(callback, percent: float, stage: str, eta_seconds: float | 
             callback(value)
 
 
+def _prepare_lyrics_filter(
+    project_id: str | None,
+    work_dir: Path,
+    ass_name: str,
+    *,
+    segment_start: float = 0.0,
+    segment_duration: float = 10.0,
+) -> str | None:
+    """
+    Tách phân đoạn lời bài hát tương ứng với segment, dịch thời gian và xuất file .ass tạm thời.
+    Trả về chuỗi filter 'subtitles=...' hoặc None.
+    """
+    if not project_id:
+        return None
+    try:
+        from core.text.ass_renderer import generate_ass_file, get_subtitle_manifest_path, load_subtitle_manifest
+        
+        manifest_path = get_subtitle_manifest_path(project_id)
+        if not manifest_path.is_file():
+            return None
+            
+        m = load_subtitle_manifest(project_id)
+        if not m.get("enabled") or not m.get("lyrics"):
+            return None
+            
+        shifted_lyrics = []
+        for item in m["lyrics"]:
+            s = float(item["start"]) - segment_start
+            e = float(item["end"]) - segment_start
+            
+            # Kiểm tra xem câu này có nằm trong phân đoạn segment hiện tại không
+            if e > 0.01 and s < segment_duration - 0.01:
+                shifted_item = dict(item)
+                # Dịch chuyển mốc thời gian
+                shifted_item["start"] = max(0.0, s)
+                shifted_item["end"] = min(segment_duration, e)
+                
+                # Dịch chuyển mốc thời gian của từng từ (nếu có)
+                if item.get("words"):
+                    shifted_words = []
+                    for w in item["words"]:
+                        w_s = float(w["start"]) - segment_start
+                        w_e = float(w["end"]) - segment_start
+                        shifted_words.append({
+                            "word": w["word"],
+                            "start": max(0.0, w_s),
+                            "end": min(segment_duration, w_e)
+                        })
+                    shifted_item["words"] = shifted_words
+                shifted_lyrics.append(shifted_item)
+                
+        if not shifted_lyrics:
+            return None
+            
+        # Xuất file ASS tạm thời trong thư mục làm việc của segment
+        ass_path = work_dir / ass_name
+        generate_ass_file(shifted_lyrics, m["style"], ass_path)
+        
+        return f"subtitles={ass_name}"
+    except Exception as exc:
+        logger.warning(f"[SubtitleRender] Không thể chuẩn bị phụ đề karaoke: {exc}")
+        return None
+
+
+def _prepare_text_filter(
+    text_profile: dict | None,
+    work_dir: Path,
+    ass_name: str,
+    *,
+    width: int,
+    height: int,
+    total_duration: float,
+    segment_start: float = 0.0,
+    segment_duration: float | None = None,
+) -> str | None:
+    """
+    Sinh file .ass trong work_dir và trả về chuỗi filter 'subtitles=...' (tham chiếu basename,
+    dùng chung builder với render cuối). Trả None nếu chữ tắt/không có nội dung/không giao segment.
+    FFmpeg phải chạy với cwd=work_dir để basename hợp lệ, tránh escaping path trên Windows.
+    """
+    if not text_profile or not text_profile.get("enabled"):
+        return None
+    if not str(text_profile.get("content") or "").strip():
+        return None
+    try:
+        import shutil as _shutil
+        from core.text.effect_renderer import build_ass_file
+        from core.text.provider import resolve_font
+
+        font = resolve_font(text_profile.get("font_style", "sans"), text_profile.get("content", ""))
+        ass_path = build_ass_file(
+            text_profile,
+            work_dir / ass_name,
+            width=width, height=height, total_duration=total_duration,
+            font_family=font["family"],
+            segment_start=segment_start, segment_duration=segment_duration,
+        )
+        if ass_path is None:
+            return None
+        text_filter = f"subtitles={ass_name}"
+        # Font bundle (data/fonts): copy vào work_dir và trỏ fontsdir='.' để libass thấy.
+        if font.get("bundled_path"):
+            try:
+                _shutil.copy2(font["bundled_path"], work_dir / Path(font["bundled_path"]).name)
+                text_filter += ":fontsdir=."
+            except OSError:
+                pass
+        return text_filter
+    except Exception as exc:
+        logger.warning(f"[TextEffect] Bỏ qua chữ động do lỗi chuẩn bị ASS: {exc}")
+        return None
+
+
 def build_effect_preview(
     background_image: Path,
     effect_video: Path,
     out_path: Path,
     duration: float = 10.0,
     motion_mode: str = "smooth_zoom",
+    effect_settings: dict | None = None,
+    text_profile: dict | None = None,
+    project_id: str | None = None,
 ) -> Path:
-    """Tạo preview 10 giây, giữ màu ảnh nền và màu gốc của hiệu ứng."""
+    """Tạo preview 10 giây dùng CHUNG filter builder với render cuối (effect_compositor)."""
     background_image = Path(background_image)
     effect_video = Path(effect_video)
     out_path = Path(out_path)
@@ -146,17 +303,36 @@ def build_effect_preview(
     else:
         base_filter = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1"
 
-    # colorkey chỉ xóa vùng gần đen. Không desaturate và không screen blend, vì hai cách đó
-    # có thể làm ảnh nền ám màu. Màu của phần tử hiệu ứng được giữ nguyên.
-    filter_complex = (
-        f"[0:v]{base_filter},format=rgba[base];"
-        "[1:v]scale=1280:720:force_original_aspect_ratio=increase,"
-        "crop=1280:720,format=rgba,"
-        "colorkey=black:0.22:0.10,colorchannelmixer=aa=0.78[fx];"
-        "[base][fx]overlay=0:0:shortest=1:format=auto,"
-        f"fps={config.VIDEO_FPS},format=yuv420p[out]"
-    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Chữ động dùng chung builder; ASS đặt cạnh file preview, ffmpeg chạy với cwd=out_path.parent.
+    text_filter = _prepare_text_filter(
+        text_profile, out_path.parent, f"{out_path.stem}.ass",
+        width=1280, height=720, total_duration=float(duration),
+        segment_start=0.0, segment_duration=float(duration),
+    )
+    
+    # Phụ đề Karaoke chạy chữ (nếu được bật và đã duyệt)
+    lyrics_filter = _prepare_lyrics_filter(
+        project_id, out_path.parent, f"{out_path.stem}_lyrics.ass",
+        segment_start=0.0, segment_duration=float(duration),
+    )
+    
+    filters = []
+    if text_filter:
+        filters.append(text_filter)
+    if lyrics_filter:
+        filters.append(lyrics_filter)
+        
+    combined_filter = ",".join(filters) if filters else None
+    
+    filter_complex = build_filter_complex(
+        base_filter,
+        effect_settings,
+        width=1280,
+        height=720,
+        fps=config.VIDEO_FPS,
+        text_filter=combined_filter,
+    )
 
     def _command(encoder: str, preset: str) -> list[str]:
         return [
@@ -170,7 +346,8 @@ def build_effect_preview(
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
         ]
 
-    attempts = [("h264_nvenc", "p1"), ("libx264", "veryfast")]
+    best = detect_best_encoder()
+    attempts = [("h264_nvenc", "p1"), ("libx264", "veryfast")] if best == "h264_nvenc" else [("libx264", "veryfast")]
     errors = []
     for encoder, preset in attempts:
         out_path.unlink(missing_ok=True)
@@ -182,6 +359,7 @@ def build_effect_preview(
             text=True,
             encoding="utf-8",
             errors="replace",
+            cwd=str(out_path.parent),
         )
         if result.returncode == 0 and out_path.is_file() and out_path.stat().st_size >= 1024:
             return out_path
@@ -191,7 +369,7 @@ def build_effect_preview(
     raise RuntimeError("FFmpeg tạo preview thất bại: " + " | ".join(errors[-12:]))
 
 
-from core.audio_processor import AudioProcessor
+from core.media.audio_processor import AudioProcessor
 
 def render_video_segment(
     project_id: str,
@@ -207,6 +385,9 @@ def render_video_segment(
     overall_start: float = 0.05,
     overall_span: float = 0.65,
     motion_mode: str = "smooth_zoom",
+    effect_settings: dict | None = None,
+    text_profile: dict | None = None,
+    total_duration: float | None = None,
 ):
     """Render segment và đọc tiến độ thật từ FFmpeg qua -progress pipe:1."""
     import time
@@ -227,20 +408,44 @@ def render_video_segment(
         "ow=iw:oh=ih:bilinear=1:fillcolor=black,"
         "crop=1920:1080:(iw-1920)/2:(ih-1080)/2,setsar=1"
     )
-    filter_complex = (
-        f"[0:v]{base_filter}[base];"
-        "[1:v]scale=1920:1080:force_original_aspect_ratio=increase,"
-        "crop=1920:1080,setsar=1,format=rgba,"
-        "colorkey=0x000000:0.18:0.08,colorchannelmixer=aa=0.72[fx];"
-        "[base][fx]overlay=shortest=1:format=auto,format=yuv420p[out]"
+    # Chữ động: ASS theo từng segment (dịch mốc thời gian theo start_seconds); ffmpeg chạy cwd=segments_dir.
+    text_filter = _prepare_text_filter(
+        text_profile, segment_path.parent, f"{segment_path.stem}.ass",
+        width=1920, height=1080,
+        total_duration=float(total_duration if total_duration is not None else duration),
+        segment_start=float(start_seconds), segment_duration=float(duration),
     )
+    
+    # Phụ đề Karaoke chạy chữ theo segment
+    lyrics_filter = _prepare_lyrics_filter(
+        project_id, segment_path.parent, f"{segment_path.stem}_lyrics.ass",
+        segment_start=float(start_seconds), segment_duration=float(duration),
+    )
+    
+    filters = []
+    if text_filter:
+        filters.append(text_filter)
+    if lyrics_filter:
+        filters.append(lyrics_filter)
+        
+    combined_filter = ",".join(filters) if filters else None
+    
+    filter_complex = build_filter_complex(
+        base_filter,
+        effect_settings,
+        width=1920,
+        height=1080,
+        fps=config.VIDEO_FPS,
+        text_filter=combined_filter,
+    )
+    preset = "p1" if encoder == "h264_nvenc" else "ultrafast"
     cmd = [
         "ffmpeg", "-y", "-nostats", "-stats_period", "0.25", "-progress", "pipe:1",
         "-loop", "1", "-framerate", str(config.VIDEO_FPS), "-i", image_path.as_posix(),
         "-stream_loop", "-1", "-i", effect_path.as_posix(),
         "-filter_complex", filter_complex, "-map", "[out]", "-an",
         "-t", f"{duration:.3f}", "-r", str(config.VIDEO_FPS),
-        "-c:v", encoder, "-preset", "ultrafast", "-b:v", bitrate,
+        "-c:v", encoder, "-preset", preset, "-b:v", bitrate,
         "-pix_fmt", "yuv420p", segment_path.as_posix(),
     ]
     logger.info(f"[Render Segment {segment_index}] Start: {start_seconds}s, Duration: {duration}s")
@@ -250,6 +455,7 @@ def render_video_segment(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        cwd=str(segment_path.parent),
         text=True,
         encoding="utf-8",
         errors="replace",
@@ -260,6 +466,7 @@ def render_video_segment(
     total_frames = max(int(round(duration * config.VIDEO_FPS)), 1)
     last_emit = 0.0
     progress_queue: queue.Queue[str | None] = queue.Queue()
+    stderr_lines = []
 
     def _read_progress_stream() -> None:
         try:
@@ -269,7 +476,16 @@ def render_video_segment(
         finally:
             progress_queue.put(None)
 
+    def _read_stderr_stream() -> None:
+        try:
+            if process.stderr:
+                for err_line in process.stderr:
+                    stderr_lines.append(err_line)
+        except Exception:
+            pass
+
     threading.Thread(target=_read_progress_stream, daemon=True).start()
+    threading.Thread(target=_read_stderr_stream, daemon=True).start()
     if progress_callback:
         progress_callback(overall_start, f"Khởi tạo phân đoạn {segment_index + 1}", None)
 
@@ -339,8 +555,8 @@ def render_video_segment(
             0.0,
         )
 
-    stderr_text = process.stderr.read() if process.stderr else ""
     return_code = process.wait()
+    stderr_text = "".join(stderr_lines)
     if return_code != 0:
         details = (stderr_text or "FFmpeg không trả chi tiết").strip().splitlines()[-12:]
         raise RuntimeError(f"FFmpeg render segment {segment_index} thất bại: " + " | ".join(details))
@@ -414,7 +630,7 @@ def process_audio_master(input_audio: Path, ambience_audio: Path, out_path: Path
                     "-ar", str(config.AUDIO_SAMPLE_RATE),
                     out_path.as_posix()
                 ]
-                subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+                _run_ffmpeg(cmd, "FFmpeg thêm hiệu ứng vang (rich) thất bại")
             else:
                 shutil.copy(str(mixed_path), str(out_path))
                 
@@ -428,15 +644,34 @@ def process_audio_master(input_audio: Path, ambience_audio: Path, out_path: Path
 def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: Path,
               segment_duration: float = 600.0, encoder: str = None, progress_callback=None,
               vibe_mode: str = "clean", motion_mode: str = "smooth_zoom",
-              parallax_enabled: bool = False) -> Path:
+              parallax_enabled: bool = False, effect_settings: dict | None = None,
+              text_profile: dict | None = None) -> Path:
     """
     Hàm điều phối chính cho quá trình render video phân đoạn.
+    encoder=None hoặc "auto": tự dò GPU NVENC, không có thì dùng CPU libx264.
+    effect_settings: thông số compositing thống nhất (xem core/effect_compositor.py).
     """
     if parallax_enabled:
         motion_mode = "parallax"
 
-    if not encoder:
-        encoder = getattr(config, "NVENC_CODEC", "h264_nvenc")
+    if not encoder or str(encoder).lower() == "auto":
+        encoder = detect_best_encoder()
+
+    if effect_settings is None:
+        # Caller không truyền thông số: dùng kết quả phân tích loại nền trong manifest
+        # (main.py/app_server.py hưởng tự động; review_app luôn truyền tường minh).
+        try:
+            from core.effects.manifest import get_effect_metadata
+            meta = get_effect_metadata(config.EFFECTS_DIR, effect_path)
+            recommended = meta.get("recommended_composite") or {}
+            if meta.get("effect_type"):
+                effect_settings = {
+                    "effect_type": meta["effect_type"],
+                    **{key: value for key, value in recommended.items() if value is not None},
+                }
+        except Exception:
+            effect_settings = None
+    effect_settings = normalize_effect_settings(effect_settings)
 
     audio_path = Path(audio_path)
     image_path = Path(image_path)
@@ -462,19 +697,36 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
     project_dir = ProjectManager.get_project_dir(project_id)
     segments_dir = project_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    # Chữ ký thông số compositing: đưa vào TÊN segment để đổi hiệu ứng/chữ/chuyển động thì
+    # segment cache cũ (theo bộ thông số khác) không bị tái dùng nhầm.
+    try:
+        from core.effects.compositor import effect_settings_cache_key
+        from core.text.provider import text_profile_cache_key
+        signature_source = (
+            f"{effect_settings_cache_key(effect_settings)}|{motion_mode}|"
+            f"{text_profile_cache_key(text_profile)}"
+        )
+    except Exception:
+        signature_source = f"{motion_mode}"
+    composite_sig = hashlib.sha256(signature_source.encode("utf-8")).hexdigest()[:10]
+    # Dọn segment cũ khác chữ ký để không tích rác (không đụng segment đúng chữ ký).
+    for stale in segments_dir.glob("segment_*.mp4"):
+        if f"_{composite_sig}" not in stale.name:
+            stale.unlink(missing_ok=True)
+
     # Chia phân đoạn
     num_segments = int(total_duration // segment_duration)
     if total_duration % segment_duration > 0:
         num_segments += 1
-        
+
     segment_paths = []
-    
+
     # --- RENDER TỪNG PHÂN ĐOẠN ---
     for i in range(num_segments):
         start_sec = i * segment_duration
         dur = min(segment_duration, total_duration - start_sec)
-        seg_path = segments_dir / f"segment_{i}.mp4"
+        seg_path = segments_dir / f"segment_{i}_{composite_sig}.mp4"
         segment_paths.append(seg_path)
         
         # Kiểm tra tính toàn vẹn của segment cũ để bỏ qua (Resume from Checkpoint)
@@ -488,7 +740,7 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
                 pass
                 
         if is_cached:
-            print(f"[Render] Reusing cached segment {i} ({seg_path.name})")
+            logger.info(f"[Render] Reusing cached segment {i} ({seg_path.name})")
             _notify_progress(
                 progress_callback,
                 0.05 + 0.65 * (i + 1) / num_segments,
@@ -505,26 +757,35 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
                     overall_start=0.05 + 0.65 * i / num_segments,
                     overall_span=0.65 / num_segments,
                     motion_mode=motion_mode,
+                    effect_settings=effect_settings,
+                    text_profile=text_profile,
+                    total_duration=total_duration,
                 )
             except Exception as e:
                 if actual_encoder == "h264_nvenc":
-                    print(f"[Render Warning] NVENC failed on segment {i}, fallback to libx264. Error: {e}")
+                    logger.warning(f"[Render Warning] NVENC failed on segment {i}, fallback to libx264. Error: {e}")
+                    # NVENC hỏng giữa chừng: ghi nhớ để các segment sau đi thẳng CPU.
+                    _ENCODER_CACHE["encoder"] = "libx264"
+                    encoder = "libx264"
                     actual_encoder = "libx264"
                     render_video_segment(
-                    project_id, i, start_sec, dur, image_path, effect_path, seg_path,
-                    actual_encoder, config.VIDEO_BITRATE,
-                    progress_callback=progress_callback,
-                    overall_start=0.05 + 0.65 * i / num_segments,
-                    overall_span=0.65 / num_segments,
-                    motion_mode=motion_mode,
-                )
+                        project_id, i, start_sec, dur, image_path, effect_path, seg_path,
+                        actual_encoder, config.VIDEO_BITRATE,
+                        progress_callback=progress_callback,
+                        overall_start=0.05 + 0.65 * i / num_segments,
+                        overall_span=0.65 / num_segments,
+                        motion_mode=motion_mode,
+                        effect_settings=effect_settings,
+                        text_profile=text_profile,
+                        total_duration=total_duration,
+                    )
                 else:
                     raise e
                     
 
     # --- GHÉP CÁC PHÂN ĐOẠN (CONCAT) ---
     _notify_progress(progress_callback, 0.72, "Ghép các phân đoạn")
-    print("[Render] Concat segment files...")
+    logger.info("[Render] Concat segment files...")
     concat_list_file = segments_dir / "segments_list.txt"
     with open(concat_list_file, "w", encoding="utf-8") as f:
         for path in segment_paths:
@@ -539,11 +800,11 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
         "-c", "copy",
         joined_video_raw.as_posix()
     ]
-    subprocess.run(cmd_concat, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    _run_ffmpeg(cmd_concat, "FFmpeg ghép các phân đoạn thất bại")
     
     # --- TRỘN & CHUẨN HÓA AUDIO MASTER ---
     _notify_progress(progress_callback, 0.78, "Xử lý âm thanh")
-    print("[Render] Preparing audio master...")
+    logger.info("[Render] Preparing audio master...")
     ambience_audio = config.EFFECTS_DIR / "rain_ambience.mp3"
     if not ambience_audio.exists():
         cmd_amb = [
@@ -552,14 +813,14 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
             "-t", "5",
             ambience_audio.as_posix()
         ]
-        subprocess.run(cmd_amb, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        _run_ffmpeg(cmd_amb, "FFmpeg tạo ambience mặc định thất bại")
         
     master_audio = segments_dir / "audio_master.m4a"
     process_audio_master(audio_path, ambience_audio, master_audio, total_duration, vibe_mode)
 
     # --- MUX VIDEO & AUDIO LẦN CUỐI ---
     _notify_progress(progress_callback, 0.88, "Ghép hình và âm thanh")
-    print("[Render] Muxing final video...")
+    logger.info("[Render] Muxing final video...")
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Không ghi đè file đang được Streamlit/OneDrive giữ mở. Mỗi lần render tạo tên mới.
@@ -619,7 +880,7 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
 
     # --- XÁC MINH SẢN PHẨM CUỐI (VERIFIER) ---
     _notify_progress(progress_callback, 0.96, "Kiểm tra video đầu ra")
-    print("[Render] Verifying output...")
+    logger.info("[Render] Verifying output...")
     # Trích xuất track_id từ audio_path
     track_id = audio_path.stem
     manifest = OutputVerifier.verify_video(
@@ -651,8 +912,8 @@ if __name__ == "__main__":
     # Test nhanh segmented render
     p_id = "test_render_prj"
     
-    import core.db
-    core.db.init_db()
+    import core.runtime.db
+    core.runtime.db.init_db()
     
     # Cleanup cũ
     conn = get_db_connection()

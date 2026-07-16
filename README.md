@@ -34,10 +34,14 @@
 | 🍃 **Chuyển động sống theo từng lớp** | Tự nhận diện từ prompt: mây hậu cảnh trôi chậm, đèn thành phố nhấp nháy nhè nhẹ — trung cảnh giữ yên |
 | 🌿 **Lá cây lay riêng từng vùng** | Segmentation thực vật (SegFormer ONNX ~4MB, CPU) + warp displace FFmpeg với sóng sin lệch pha — từng cụm lá lay nhịp riêng như gió thổi, vật thể khác đứng yên |
 | ✨ **Hiệu ứng sinh bằng code** | Mưa rơi/tuyết rơi/bụi bay có quỹ đạo thật + scanline + film grain, lặp khít (seamless loop), không cần tải footage |
+| 🟢 **Chroma key phông xanh thật** | Tự nhận diện video phông xanh/nền đen/alpha (phân tích khung hình local), tách nền bằng `chromakey + despill + feather` trong FFmpeg và WebGL shader trong Live Preview — không còn viền xanh như blend screen |
+| 🧩 **Filter builder dùng chung** | `core/effect_compositor.py` sinh một chuỗi filter duy nhất cho cả preview 10 giây lẫn render cuối — chỉnh opacity/tốc độ/chroma ở đâu thì mọi nơi khớp nhau |
+| 🤖 **AI đề xuất hiệu ứng local-first** | AI tạo hồ sơ (effect_type + query đúng loại asset), xếp hạng thư viện local trước, thiếu mới gọi Pixabay — tiết kiệm quota, chạy được offline |
 | 🎧 **Chất âm lofi đặc trưng** | Slowed 0.88x + lowpass ấm + compressor; tiếng mưa & vinyl crackle tự sinh bằng code |
-| 🎬 **Dựng video GPU** | Render Full HD 1920×1080 với NVENC (GPU) hoặc libx264 (CPU), có hiệu ứng overlay |
+| 🎬 **Dựng video GPU/CPU tự động** | Tự dò GPU bằng test encode NVENC thật: máy có GPU dùng `h264_nvenc`, không có tự chuyển `libx264` — không cần cấu hình tay |
+| ☁️ **Upload YouTube + AI caption** | Bước 6 của wizard: AI viết title/description/hashtag (chỉnh tay được), chọn chế độ đăng/lịch đăng, upload resumable có tiến độ |
 | 🛡️ **Kiểm soát bản quyền** | Hệ thống schema & kiểm duyệt quyền tác giả trước khi xuất bản |
-| 📊 **Dashboard trực quan** | Giao diện Streamlit wizard 5 bước, điều hướng có điều kiện, preview trực tiếp |
+| 📊 **Dashboard trực quan** | Giao diện Streamlit wizard 6 bước, điều hướng có điều kiện, preview trực tiếp |
 | 🤖 **Quản lý SD Local** | Trỏ đến AUTOMATIC1111 có sẵn **hoặc** để App tự tải & cài đặt — xem [hướng dẫn bên dưới](#-cài-đặt-stable-diffusion-local) |
 | ✅ **Bộ kiểm thử đầy đủ** | 13 unit test tự động bao phủ DB, lock, scheduler, render, SD gates, audio vibe, upscale, parallax |
 
@@ -84,7 +88,7 @@ pip install -r requirements.txt
 ### Bước 3: Khởi chạy Dashboard
 
 ```bash
-python -m streamlit run step3_review_app.py
+python -m streamlit run review_app.py
 ```
 
 Dashboard tự động mở trên trình duyệt tại `http://localhost:8501`.
@@ -118,13 +122,17 @@ lofi_automation/
 ├── 📄 .env.example               # Mẫu cấu hình môi trường (chép thành .env)
 │
 ├── 🎵 step1_music_hunter.py      # Tìm nhạc đa nguồn (SoundCloud + YouTube) & stream preview
-├── 🎨 step2_image_provider.py    # Sinh ảnh nền AI (5 provider) & bộ hiệu ứng code
-├── 🖥️  step3_review_app.py        # Streamlit Dashboard chính (wizard 5 bước)
-├── 🎬 step4_render.py            # Engine dựng video FFmpeg
-├── ☁️  step5_uploader.py          # Tải video lên YouTube
+├── 🎨 step2_image_provider.py    # Sinh ảnh nền AI (5 provider)
+├── ✨ step3_effect_provider.py   # Thư viện hiệu ứng: builtin pack, Pixabay, manifest, đề xuất local-first
+├── 🖥️  review_app.py              # Streamlit Dashboard chính (wizard 6 bước)
+├── 🎬 step4_render.py            # Engine dựng video FFmpeg (encoder auto GPU/CPU)
+├── ☁️  step5_uploader.py          # Tải video lên YouTube (resumable, tiến độ, lịch đăng)
 │
 ├── utils/
 │   └── 📄 helpers.py             # Các hàm bổ trợ (LLM prompt, metadata, retry)
+│
+├── components/
+│   └── effect_live_preview/     # Live Preview trình duyệt: CSS blend + WebGL chroma key, xem matte
 │
 └── core/                        # Các module lõi
     ├── 📄 db.py                  # SQLite database & migrations
@@ -134,6 +142,11 @@ lofi_automation/
     ├── 📄 resource_scheduler.py  # GPU/CPU job scheduler
     ├── 📄 render_worker.py       # Worker render phân đoạn video
     ├── 📄 audio_processor.py     # Chất âm lofi, LUFS, loop crossfade, ambience code
+    ├── 📄 effect_compositor.py   # Filter builder FFmpeg dùng chung (chroma key, despill, feather, blend)
+    ├── 📄 effect_analyzer.py     # Tự nhận diện loại nền hiệu ứng (phông xanh/nền đen/alpha)
+    ├── 📄 effect_recommender.py  # Hồ sơ AI + xếp hạng local-first cho hiệu ứng
+    ├── 📄 effect_manifest.py     # Manifest thư viện hiệu ứng (nguồn, license, effect_type)
+    ├── 📄 caption_writer.py      # AI viết title/description/hashtag cho upload YouTube
     ├── 📄 depth_estimator.py     # Depth Anything V2 (onnxruntime) cho parallax
     ├── 📄 vegetation_masker.py   # SegFormer ADE20K - mask vùng cây lá cho warp
     ├── 📄 parallax_processor.py  # Tách lớp theo depth, sway maps & filter parallax FFmpeg
@@ -152,20 +165,27 @@ lofi_automation/
 Dự án cung cấp hai giao diện chính để thao tác và kiểm soát:
 
 ### 1. Dashboard Trực quan (Khuyến nghị)
-Giao diện **Streamlit** (tích hợp wizard 5 bước) giúp người dùng thực hiện toàn bộ quy trình: cấu hình, duyệt/tải nhạc, sinh ảnh AI, chọn hiệu ứng và render.
+Giao diện **Streamlit** (tích hợp wizard 6 bước) giúp người dùng thực hiện toàn bộ quy trình: cấu hình, duyệt/tải nhạc, sinh ảnh AI, chọn hiệu ứng, render và upload YouTube.
 
 Khởi chạy bằng lệnh:
 ```bash
-python -m streamlit run step3_review_app.py
+python -m streamlit run review_app.py
 ```
 Mở trình duyệt truy cập: **`http://localhost:8501`**
 
 #### Các bước thực hiện trên Dashboard:
-- **Bước 1 — ⚙️ Cấu hình hệ thống**: Thiết lập thư mục lưu đầu ra, chọn AI Image Provider (Pollinations / AI Horde / Hugging Face / SD Local) và quản lý SD WebUI.
-- **Bước 2 — 🎵 Tìm nhạc**: Lọc theo danh mục hoặc tìm tự do, nghe thử trực tuyến không cần tải, xem bản quyền và chọn nhạc.
-- **Bước 3 — 🎨 Sinh ảnh & Hiệu ứng**: Nhập prompt mô tả (hoặc sinh prompt ngẫu nhiên bằng LLM), chọn hiệu ứng overlay (mưa, bụi, film grain, scanlines...).
-- **Bước 4 — 🚀 Dựng video**: Kiểm tra lại thông số và tiến hành Render video Full HD.
-- **Bước 5 — ☁️ Tải lên**: Tải video về máy hoặc upload trực tiếp lên YouTube.
+- **Bước 1 — ⚙️ Kiểm tra hệ thống**: Kiểm tra FFmpeg/CPU/GPU, chọn AI Image Provider (Pollinations / AI Horde / Hugging Face / SD Local) và quản lý SD WebUI.
+- **Bước 2 — 🎵 Chọn nhạc**: Lọc theo danh mục hoặc tìm tự do, nghe thử trực tuyến không cần tải, xem bản quyền và chọn nhạc.
+- **Bước 3 — 🎨 Tạo ảnh nền**: Nhập prompt mô tả (hoặc sinh prompt bằng LLM theo bài nhạc) và tạo ảnh nền.
+- **Bước 4 — ✨ Chọn hiệu ứng**: Giao diện 3 tab:
+  - **Đề xuất** — AI phân tích nhạc/ảnh, xếp hạng thư viện local trước, thiếu mới tìm Pixabay; ứng viên hiển thị dạng card (thumbnail, điểm AI, thời lượng, nguồn, license).
+  - **Điều chỉnh** — Loại hiệu ứng (tự nhận diện phông xanh/nền đen/alpha), opacity, tốc độ, chế độ hòa trộn và bộ thông số chroma key (màu phông, similarity, softness, despill, feather, xem matte).
+  - **Thư viện** — Chọn hiệu ứng local, tìm Pixabay thủ công, quản lý manifest và phân tích cảnh (nâng cao).
+  Live Preview chạy WebGL chroma key ngay trong trình duyệt; nút "Preview FFmpeg 10 giây" dùng đúng filter của render cuối.
+- **Bước 5 — 🚀 Render video**: Encoder "Tự động" dò GPU thật (có NVENC dùng GPU, không có chuyển CPU libx264), theo dõi tiến độ/ETA.
+- **Bước 6 — 📤 Upload YouTube**: Bấm "Tạo caption + hashtag bằng AI" (sửa tay được), chọn chế độ đăng (riêng tư + lịch tự động/chọn giờ, unlisted, công khai) rồi upload có thanh tiến độ.
+
+> **Điều kiện upload YouTube:** cài thư viện `pip install google-auth-oauthlib google-api-python-client` và đặt file OAuth `client_secret.json` (Google Cloud Console → bật YouTube Data API v3 → tạo OAuth client Desktop) vào thư mục `secrets/`. Lần upload đầu tiên sẽ mở trình duyệt để đăng nhập.
 
 ### 2. Backend REST API
 Hệ thống cung cấp một REST API (FastAPI) để tích hợp với các công cụ tự động hóa hoặc giao diện bên ngoài.
@@ -248,9 +268,16 @@ SD_LOCAL_SAMPLER=DPM++ 2M Karras
 # POLLINATIONS_API_KEY=
 
 # LLM viết prompt ảnh theo bài nhạc (mặc định Pollinations miễn phí, không cần key)
+# Cùng endpoint này được dùng cho AI đề xuất hiệu ứng và AI viết caption upload.
 # PROMPT_API_URL=https://text.pollinations.ai/openai
 # PROMPT_API_KEY=            # key Groq / OpenRouter / Gemini... nếu muốn
 # PROMPT_API_MODEL=openai
+
+# Thư viện hiệu ứng online (tùy chọn - có key mới tìm được video Pixabay)
+# PIXABAY_API_KEY=           # pixabay.com/api/docs - key hiển thị "Đã kết nối" trong UI
+
+# Encoder video: mặc định không cần đặt - app tự dò GPU bằng test encode.
+# Chỉ đặt khi muốn ép cứng: NVENC_CODEC=h264_nvenc (hoặc chọn "CPU ổn định" trong UI)
 ```
 
 Các mặc định khác (prompt ảnh, negative prompt, tempo lofi, bitrate video...)
@@ -262,31 +289,66 @@ nằm trong [`config.py`](config.py) và đều đọc được từ biến môi
 - Negative prompt chặn ảnh tả thực (`photorealistic, photo, 3d render...`) — đầu ra luôn là tranh vẽ/anime.
 - Payload SD dùng sampler DPM++ 2M Karras, CFG 7, Clip skip 2 (chuẩn checkpoint anime SD 1.5).
 
+### Hiệu ứng overlay & Chroma key
+
+- **4 loại hiệu ứng** (`effect_type`): `screen_black` (overlay nền đen, xóa vùng gần đen bằng colorkey), `chroma_key` (phông xanh, tách nền bằng `chromakey → despill → feather alpha → overlay`), `alpha` (video có kênh alpha) và `normal` (ghép đè thường).
+- Sau khi tải/quét, `core/effect_analyzer.py` lấy mẫu ~5 khung hình, phân tích màu vùng biên và tự ghi `effect_type`, màu nền phát hiện được và bộ thông số đề xuất vào `data/effects/manifest.json` — chạy hoàn toàn local, không gọi AI.
+- Preset chroma mặc định: key `#00FF00`, similarity `0.18`, softness `0.08`, despill `0.35`, feather `1.5px` — chỉnh được theo từng video trong tab **Điều chỉnh**.
+- Preview FFmpeg 10 giây và render cuối dùng **cùng một filter builder** (`core/effect_compositor.py`); cache preview chứa toàn bộ thông số compositing nên đổi bất kỳ thông số nào preview cũ tự vô hiệu.
+- Live Preview trình duyệt dùng WebGL shader cho chroma key (CSS blend không tách được phông xanh), có chế độ **Xem matte** và 2 mức chất lượng (640×360 / 960×540). Feather viền chỉ áp ở phía FFmpeg.
+
+### Encoder GPU/CPU tự động
+
+- `step4_render.detect_best_encoder()` chạy một lần encode thử NVENC thật (không tin danh sách `-encoders` vì FFmpeg build kèm NVENC cả trên máy không có GPU).
+- Máy có GPU NVIDIA → `h264_nvenc`; không có → `libx264`. Kết quả cache theo tiến trình; NVENC hỏng giữa chừng thì các segment sau tự chuyển CPU.
+- UI bước Render có 3 lựa chọn: **Tự động** (khuyên dùng), **GPU NVENC**, **CPU ổn định**.
+
+### Tăng tốc render mà không giảm chất lượng
+
+Renderer hiện giữ nguyên độ phân giải 1920×1080, FPS, bitrate và filter khi dùng GPU. Để tối ưu tốc độ mà không thay đổi chất lượng đầu ra:
+
+- Chọn **Tự động** hoặc **GPU NVENC** trên màn hình Render. Chế độ tự động kiểm tra một lần encode NVENC thực tế rồi chỉ dùng GPU khi encoder hoạt động được.
+- Dùng SSD cho thư mục dự án và thư mục output. Render phân đoạn tạo các file trung gian trước khi ghép và mux audio; ổ đĩa chậm có thể trở thành nút thắt.
+- Giữ mux video ở chế độ stream copy. Pipeline đã ưu tiên `-c:v copy` khi ghép audio; chỉ encode video lại bằng CPU khi stream copy thất bại.
+- Theo dõi mức sử dụng CPU, GPU và VRAM khi render. NVENC tăng tốc khâu encode, nhưng các filter như scale, rotate, chroma key và ASS subtitle vẫn có thể chạy trên CPU.
+
+> Không nên giảm `VIDEO_FPS`, độ phân giải hoặc đổi scale `lanczos` sang filter nhẹ hơn nếu mục tiêu là giữ nguyên chất lượng. Các thay đổi này có thể nhanh hơn nhưng là đánh đổi chất lượng.
+
+> Hướng nâng cấp tiếp theo là render các segment song song với số worker giới hạn (CPU: thường 2–4; NVENC: thường 1–2) và cấu hình `filter_threads`. Đây là tối ưu kiến trúc chưa được bật trong renderer hiện tại, nên cần benchmark theo CPU, VRAM và tốc độ SSD trước khi áp dụng.
+
 ---
 
 ## 🏗️ Kiến trúc kỹ thuật
 
 ```mermaid
 graph TD
-    UI[Streamlit Dashboard<br/>step3_review_app.py] --> S1[Step 1: Music Hunter<br/>yt-dlp đa nguồn + stream preview]
+    UI[Streamlit Dashboard<br/>review_app.py - wizard 6 bước] --> S1[Step 1: Music Hunter<br/>yt-dlp đa nguồn + stream preview]
     UI --> S2[Step 2: Image Provider<br/>5 backends]
-    UI --> S4[Step 4: Render Engine<br/>FFmpeg + NVENC]
-    UI --> S5[Step 5: Uploader<br/>YouTube API]
-    
+    UI --> S3[Step 3: Effect Provider<br/>builtin + Pixabay + manifest]
+    UI --> S4[Step 4: Render Engine<br/>FFmpeg + auto GPU/CPU]
+    UI --> S5[Step 5: Uploader<br/>YouTube API + AI caption]
+
     S2 --> P1[Pollinations AI]
     S2 --> P2[AI Horde]
     S2 --> P3[HuggingFace]
     S2 --> P5[Cloudflare Workers AI]
     S2 --> P4[SD Local]
-    
+
     P4 --> SDA[SD Adapter<br/>OpenAPI discover]
     SDA --> SDH[SD Health Checker<br/>256x256 test]
-    
+
+    S3 --> ER[Effect Recommender<br/>hồ sơ AI + local-first]
+    S3 --> EA[Effect Analyzer<br/>nhận diện phông xanh/nền đen]
+    S3 --> LP[Live Preview<br/>WebGL chroma key]
+
+    S4 --> EC[Effect Compositor<br/>chromakey + despill + feather<br/>dùng chung preview và render]
     S4 --> PX[Parallax Processor<br/>3 lớp theo depth]
     PX --> DE[Depth Estimator<br/>Depth Anything V2 ONNX]
     PX --> VM[Vegetation Masker<br/>SegFormer + sway warp lá cây]
     S4 --> AP[Audio Processor<br/>lofi character + ambience]
-    
+
+    S5 --> CW[Caption Writer<br/>AI title/hashtag + fallback]
+
     UI --> C[Core Platform]
     C --> DB[(SQLite DB)]
     C --> LM[Lock Manager<br/>Fencing Tokens]

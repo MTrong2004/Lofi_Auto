@@ -1,0 +1,100 @@
+:root {
+  color-scheme: dark;
+  --preview-radius: 14px;
+  --preview-bg: #111320;
+  --preview-border: rgba(148, 163, 184, 0.22);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: transparent; font-family: Inter, system-ui, sans-serif; }
+.live-preview-shell { width: 100%; }
+.live-preview-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--preview-border);
+  border-radius: var(--preview-radius);
+  background: var(--preview-bg);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+  isolation: isolate;
+}
+.live-preview-background,
+.live-preview-effect,
+.live-preview-canvas,
+.live-preview-vignette {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.live-preview-canvas {
+  object-fit: cover;
+  pointer-events: none;
+  z-index: 2;
+}
+.live-preview-background {
+  object-fit: cover;
+  transform: scale(1.035);
+  will-change: transform;
+}
+.live-preview-background.motion-smooth_zoom {
+  animation: smoothZoom 10s ease-in-out infinite alternate;
+}
+.live-preview-background.motion-parallax {
+  animation: parallaxApprox 8s ease-in-out infinite alternate;
+}
+.live-preview-effect {
+  object-fit: cover;
+  pointer-events: none;
+  will-change: opacity;
+}
+.live-preview-vignette {
+  pointer-events: none;
+  background: radial-gradient(circle at center, transparent 58%, rgba(0, 0, 0, 0.2) 100%);
+  z-index: 3;
+}
+.live-preview-status {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(12, 16, 28, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #dbeafe;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  backdrop-filter: blur(8px);
+}
+.live-preview-note { margin-top: 7px; color: #8b95aa; font-size: 12px; }
+@keyframes smoothZoom {
+  0% { transform: scale(1.035) translate3d(-0.35%, 0.15%, 0); }
+  100% { transform: scale(1.075) translate3d(0.35%, -0.15%, 0); }
+}
+@keyframes parallaxApprox {
+  0% { transform: scale(1.06) translate3d(-0.75%, 0.2%, 0); }
+  100% { transform: scale(1.06) translate3d(0.75%, -0.2%, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-preview-background { animation: none !important; }
+}
+
+.live-preview-text-container {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  display: flex;
+  box-sizing: border-box;
+  padding: 5.5% 4.16% 9.25% 4.16%;
+}
+.live-preview-text-content {
+  text-align: center;
+  white-space: pre-line;
+  max-width: 90%;
+  line-height: 1.25;
+  will-change: transform, opacity, filter, text-shadow;
+}
+

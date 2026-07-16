@@ -11,7 +11,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - Lớp `ResourceScheduler`, `IdempotencyConflictError`.
 Phụ thuộc quan trọng:
-- core.db, core.lock_manager, sqlite3
+- core.runtime.db, core.runtime.lock_manager, sqlite3
 Lưu ý khi sửa:
 - Kiểm tra tính hợp lệ của Idempotency Key cẩn thận để tránh chặn các Job hợp lệ nhưng cùng tên.
 """
@@ -27,7 +27,7 @@ import sqlite3
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.db import get_db_connection
+from core.runtime.db import get_db_connection
 
 class IdempotencyConflictError(Exception):
     pass
@@ -227,9 +227,9 @@ class ResourceScheduler:
 
 if __name__ == "__main__":
     # Test nhanh Scheduler và Hàng đợi
-    import core.db
-    from core.project_manager import ProjectManager
-    core.db.init_db()
+    import core.runtime.db
+    from core.runtime.project_manager import ProjectManager
+    core.runtime.db.init_db()
     
     p_id = "test_sch_prj"
     
@@ -280,4 +280,3 @@ if __name__ == "__main__":
         p_json.unlink()
         
     print("Cleanup done.")
-

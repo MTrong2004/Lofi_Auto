@@ -17,7 +17,8 @@ Chức năng chính:
 API được file khác sử dụng:
 - get_authenticated_service()
 - build_video_metadata(), pick_schedule_time()
-- upload_video()
+- upload_video() (hỗ trợ progress_callback và publish_at)
+- get_upload_prerequisites() (UI kiểm tra thư viện Google + client_secret trước khi upload)
 
 Phụ thuộc quan trọng:
 - google-auth-oauthlib, google-api-python-client, config, MetadataStore.
@@ -39,6 +40,23 @@ from utils.helpers import MetadataStore
 
 logger = logging.getLogger("lofi_automation")
 store = MetadataStore(config.METADATA_DIR)
+
+
+def get_upload_prerequisites() -> dict:
+    """Kiểm tra điều kiện upload để UI báo thiếu gì thay vì lỗi giữa chừng."""
+    try:
+        import googleapiclient  # noqa: F401
+        import google_auth_oauthlib  # noqa: F401
+        google_libs = True
+    except ImportError:
+        google_libs = False
+    return {
+        "google_libs": google_libs,
+        "client_secret": config.YOUTUBE_CLIENT_SECRETS_FILE.exists(),
+        "token": config.YOUTUBE_TOKEN_FILE.exists(),
+        "client_secret_path": str(config.YOUTUBE_CLIENT_SECRETS_FILE),
+        "install_hint": "pip install google-auth-oauthlib google-api-python-client",
+    }
 
 
 def get_authenticated_service():
@@ -99,25 +117,39 @@ def pick_schedule_time() -> datetime:
     return target
 
 
-def upload_video(video_path: Path, track_id: str, video_index: int, title: str = None, description: str = None, tags: list = None, privacy: str = None) -> str:
+def upload_video(
+    video_path: Path,
+    track_id: str,
+    video_index: int,
+    title: str = None,
+    description: str = None,
+    tags: list = None,
+    privacy: str = None,
+    publish_at: datetime = None,
+    progress_callback=None,
+) -> str:
     """
-    Upload video ở trạng thái Private, sau đó chuyển Scheduled.
+    Upload video resumable lên YouTube.
+    - privacy=None: private + tự đặt lịch theo khung giờ traffic cao (hành vi cũ).
+    - publish_at: thời điểm đăng cụ thể (chỉ hợp lệ khi privacy là private).
+    - progress_callback(percent 0.0-1.0): UI hiển thị tiến độ.
     """
     from googleapiclient.http import MediaFileUpload
-    
+
+    video_path = Path(video_path)
+    if not video_path.is_file():
+        raise FileNotFoundError(f"Không tìm thấy file video để upload: {video_path}")
+
     service = get_authenticated_service()
     default_metadata = build_video_metadata(track_id, video_index)
-    
+
     final_title = title if title is not None else default_metadata["title"]
     final_description = description if description is not None else default_metadata["description"]
     final_tags = tags if tags is not None else default_metadata["tags"]
     final_privacy = privacy if privacy is not None else config.UPLOAD_PRIVACY_INITIAL
-    
-    schedule_time = pick_schedule_time()
-    schedule_iso = schedule_time.astimezone().isoformat()
-    
+
     logger.info(f"Upload '{final_title}', trạng thái: {final_privacy}")
-    
+
     body = {
         "snippet": {
             "title": final_title,
@@ -130,30 +162,44 @@ def upload_video(video_path: Path, track_id: str, video_index: int, title: str =
             "selfDeclaredMadeForKids": False,
         }
     }
-    # Chỉ đặt lịch nếu để chế độ private mặc định và không chỉ định ghi đè privacy công khai trực tiếp
-    if final_privacy == "private" and not privacy:
-        body["status"]["publishAt"] = schedule_iso
-    
+    if final_privacy == "private":
+        if publish_at is not None:
+            body["status"]["publishAt"] = publish_at.astimezone().isoformat()
+        elif not privacy:
+            # Hành vi cũ: private mặc định thì tự đặt lịch khung giờ traffic cao.
+            body["status"]["publishAt"] = pick_schedule_time().astimezone().isoformat()
+
     media = MediaFileUpload(
         str(video_path),
         mimetype="video/mp4",
         chunksize=1024 * 1024 * 10,
         resumable=True
     )
-    
+
     request = service.videos().insert(
         part="snippet,status",
         body=body,
         media_body=media
     )
-    
+
     logger.info("Bắt đầu upload video lên YouTube...")
     response = None
     while response is None:
         status, response = request.next_chunk()
         if status:
-            logger.info(f"Đã upload {int(status.progress() * 100)}%...")
-            
+            percent = float(status.progress())
+            logger.info(f"Đã upload {int(percent * 100)}%...")
+            if progress_callback:
+                try:
+                    progress_callback(percent)
+                except Exception:
+                    pass
+
     video_id = response.get("id")
+    if progress_callback:
+        try:
+            progress_callback(1.0)
+        except Exception:
+            pass
     logger.info(f"Upload thành công! Video ID: {video_id}")
     return video_id

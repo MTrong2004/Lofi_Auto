@@ -13,8 +13,8 @@ import sqlite3
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.db import get_db_connection
-from core.project_manager import ProjectManager
+from core.runtime.db import get_db_connection
+from core.runtime.project_manager import ProjectManager
 
 class CacheManager:
     @staticmethod
@@ -138,8 +138,8 @@ class CacheManager:
 
 if __name__ == "__main__":
     # Test nhanh cơ chế Invalidation
-    import core.db
-    core.db.init_db()
+    import core.runtime.db
+    core.runtime.db.init_db()
 
     p_id = "test_invalidate_prj"
     try:

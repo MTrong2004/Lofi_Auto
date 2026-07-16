@@ -11,7 +11,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - Lớp `ProjectManager` và các hàm tĩnh của nó (`create_project()`, `load_project()`, `update_workflow_status()`, v.v.).
 Phụ thuộc quan trọng:
-- core.db, core.schemas, config
+- core.runtime.db, core.runtime.schemas, config
 Lưu ý khi sửa:
 - Mọi thao tác ghi file JSON trạng thái dự án phải đi qua `_write_atomic` để bảo toàn dữ liệu tránh hư hỏng file.
 """
@@ -25,8 +25,8 @@ import sqlite3
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.db import get_db_connection
-from core.schemas import validate_data_schema, SchemaValidationError
+from core.runtime.db import get_db_connection
+from core.runtime.schemas import validate_data_schema, SchemaValidationError
 
 PROJECTS_DIR = config.BASE_DIR / "data" / "projects"
 
@@ -356,8 +356,8 @@ class ProjectManager:
 
 if __name__ == "__main__":
     # Test nhanh
-    import core.db
-    core.db.init_db()
+    import core.runtime.db
+    core.runtime.db.init_db()
     
     p_id = "test_prj_1"
     
@@ -417,5 +417,3 @@ if __name__ == "__main__":
                 p_json.unlink()
         except Exception:
             pass
-
-

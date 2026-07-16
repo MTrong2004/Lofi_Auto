@@ -14,9 +14,9 @@ from datetime import datetime, timezone
 # Đảm bảo import được config.py từ thư mục cha
 sys.path.append(str(Path(__file__).parent.parent))
 import config
-from core.media_probe import MediaProbe, MediaProbeError
-from core.schemas import validate_data_schema, SchemaValidationError
-from core.cache_manager import CacheManager
+from core.media.probe import MediaProbe, MediaProbeError
+from core.runtime.schemas import validate_data_schema, SchemaValidationError
+from core.runtime.cache_manager import CacheManager
 
 class OutputVerificationError(Exception):
     pass

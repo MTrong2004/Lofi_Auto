@@ -15,8 +15,8 @@ import step1_music_hunter
 import step2_image_provider
 import step4_render
 import system_check
-from core.sd_manager import SDProcessManager
-from core.image_upscaler import ImageUpscaler
+from core.image.sd_manager import SDProcessManager
+from core.image.upscaler import ImageUpscaler
 
 
 logging.basicConfig(
@@ -296,8 +296,8 @@ def bg_render_task(payload: RenderPayload):
         render_state["progress"] = pct
         
     try:
-        import core.db
-        core.db.init_db()
+        import core.runtime.db
+        core.runtime.db.init_db()
         
         # Cập nhật cấu hình
         config.VIDEO_DURATION_SECONDS = payload.duration_seconds
