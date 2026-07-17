@@ -188,22 +188,18 @@ def generate_caption(
             "Tags and hashtags are unique and relevant to the facts.",
         ],
     }, ensure_ascii=False)
-    headers = {"Content-Type": "application/json"}
-    if str(api_key or "").strip():
-        headers["Authorization"] = f"Bearer {str(api_key).strip()}"
     try:
-        response = requests.post(str(api_url).strip(), headers=headers, json={
-            "model": model, "temperature": 0.45, "max_tokens": 700,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"},
-        }, timeout=timeout)
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        if isinstance(content, dict):
-            raw = content
-        else:
-            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I)
-            raw = json.loads(cleaned)
+        # Dùng hàm LLM chung (fallback model/provider); primary = tham số truyền vào (config.PROMPT_API_*).
+        from utils.helpers import call_llm_chat
+        content = call_llm_chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            json_mode=True, max_tokens=700, temperature=0.45, timeout=timeout,
+            primary=(api_url, api_key, model),
+        )
+        if not content:
+            return _normalize_caption({}, fallback, credit_text)
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I)
+        raw = json.loads(cleaned)
         raw["source"] = "ai"
         return _normalize_caption(raw, fallback, credit_text)
     except Exception as exc:

@@ -1,37 +1,32 @@
 """
-AI FILE NOTE - STREAMLIT REVIEW DASHBOARD
-
+AI FILE NOTE - REVIEW_APP (UI STREAMLIT ĐIỀU PHỐI)
 Chức năng chính:
-- Giao diện wizard 6 bước: kiểm tra hệ thống, chọn nhạc, tạo ảnh, chọn hiệu ứng, render, upload YouTube.
-- Điều phối step1_music_hunter, step2_image_provider, step3_effect_provider, step4_render và step5_uploader.
-- Bước hiệu ứng chia 3 tab (Đề xuất/Điều chỉnh/Thư viện), hỗ trợ chroma key và tự nhận diện loại nền.
-- Bước upload sinh caption/hashtag bằng AI (core/caption_writer) và upload có tiến độ.
-- Quản lý Streamlit session_state, lưu/khôi phục tiến trình tại data/review_app_state.json.
-- Hiển thị preview nhạc, ảnh, hiệu ứng, trend và tiến độ render/ETA.
-- Quản lý kết nối/cài đặt Stable Diffusion Local từ giao diện.
-
-Cách chạy chuẩn:
-- py -3.10 -m streamlit run review_app.py
-
+- File UI/điều phối bằng Streamlit (KHÔNG chứa thuật toán nặng); wizard tạo video lofi qua 7 BƯỚC:
+  B1 Kiểm tra hệ thống + SD local -> B2 Chọn nhạc -> B3 Chỉnh âm/Remix (render_remix_wizard_step:
+  tempo/pitch/EQ/reverb + mix nhiều bài) -> B4 Tạo ảnh nền -> B5 Hiệu ứng & Chữ
+  (tab: AI gợi ý / Điều chỉnh-Xóa phông / Thư viện / Chữ nghệ thuật / Tạo phụ đề) -> B6 Render -> B7 Upload YouTube.
+- Điều phối chọn nhạc, sinh/chọn ảnh, hiệu ứng overlay, Chroma Key, phụ đề, chữ nghệ thuật, render và upload.
+- Sinh prompt ảnh theo bài (ưu tiên LLM, fallback heuristic xoay vòng bối cảnh), lưu/khôi phục tiến trình ra ổ đĩa.
+- Lệnh chạy: py -3.10 -m streamlit run review_app.py
 Đầu vào chính:
-- Thao tác người dùng, API key tùy chọn, project_id và các asset đã chọn.
-
+- Tương tác người dùng qua Streamlit; st.session_state; file state đã lưu; cấu hình từ config; API key nhập trong UI (không hard-code).
 Đầu ra chính:
-- Trạng thái dự án, asset được duyệt và video cuối do step4_render tạo.
-
-Luồng phụ thuộc:
-- Bước 2 gọi step1_music_hunter để tìm/tải/phân tích nhạc.
-- Bước 3 gọi step2_image_provider hoặc nhận ảnh Dreamina upload.
-- Bước 4 tạo/chọn overlay, gọi step3_effect_provider.recommend_effects() (local trước Pixabay)
-  và step4_render.build_effect_preview() với effect_settings thống nhất.
-- Bước 5 gọi step4_render.run_step4() (encoder auto dò GPU) để render video cuối.
-- Bước 6 gọi core/caption_writer.generate_caption() và step5_uploader.upload_video().
-
+- data/cache/review_app_state.json (APP_STATE_FILE), data/config/prompt_api_settings.json (PROMPT_SETTINGS_FILE); ảnh/hiệu ứng/video sinh ra; profile chữ/phụ đề trong project.
+API được file khác sử dụng:
+- Là app Streamlit chạy trực tiếp, không import như thư viện. Hàm định vị nhanh:
+  Router: marker `# --- PAGE ROUTING ---` cuối file; sidebar/wizard: render_local_sidebar, render_workspace_header, WIZARD_STEPS.
+  Nhạc/ảnh: render_merged_step_2, _select_track, _generate_image_with_fallback, generate_track_prompt.
+  Hiệu ứng: render_effect_wizard_step, _render_suggest_tab, _render_adjust_tab, _render_library_tab, _select_effect_path.
+  Phụ đề/chữ: _render_subtitle_controls_inline, _render_typography_controls_inline.
+  Render/upload: render_final_wizard_step, render_upload_wizard_step. State: PERSISTED_STATE_KEYS, save/load_persisted_app_state.
+Phụ thuộc quan trọng:
+- config, step1_music_hunter (tìm/tải/đánh giá nhạc), step2_image_provider (ảnh), step3_provider (hiệu ứng/lời/Whisper/dịch/phụ đề), step4_render (preview+render FFmpeg), step5_uploader (YouTube), components.effect_live_preview, core.text.*; ngoài: streamlit.
+- Các module trên được importlib.reload() ở đầu file để đồng bộ với config sau mỗi rerun; _REQUIRED_MUSIC_APIS ép step1 phải có đủ hàm public (thiếu -> RuntimeError).
 Lưu ý khi sửa:
-- Đây là file điều phối/UI, không chuyển thuật toán xử lý nặng vào đây nếu đã có module core/step riêng.
-- Giữ tên các khóa PERSISTED_STATE_KEYS và session_state đang được dùng giữa các bước.
-- Sau thao tác làm thay đổi bước hoặc asset, lưu state trước khi st.rerun() khi cần.
-- Không đổi chữ ký hàm public của step1/step2/step4 nếu chưa sửa đồng bộ nơi gọi.
+- Streamlit giữ module giữa các rerun; giữ nguyên khối reload config + backend ở đầu file.
+- Sau khi đổi bước/asset: cập nhật session_state, gọi save_persisted_app_state() khi cần rồi mới st.rerun(). Không tự đổi tên key session_state, tên file hay cấu trúc thư mục.
+- Không đổi chữ ký public của các step* nếu chưa sửa đồng bộ nơi gọi; không nuốt lỗi bằng `except: pass` (log/hiển thị ngắn gọn). API key không ghi ra log/UI.
+- Sau sửa: chạy `python -m py_compile review_app.py`, xác nhận router + WIZARD_STEPS đồng bộ và thứ tự tab bước hiệu ứng còn đúng.
 """
 import json
 import os
@@ -43,8 +38,7 @@ import streamlit as st
 import config
 import step1_music_hunter
 import step2_image_provider
-import step3_subtitle_provider
-import step3_effect_provider
+import step3_provider
 import step4_render
 from components.effect_live_preview import effect_live_preview
 import importlib
@@ -54,8 +48,7 @@ import importlib
 config = importlib.reload(config)
 step1_music_hunter = importlib.reload(step1_music_hunter)
 step2_image_provider = importlib.reload(step2_image_provider)
-step3_subtitle_provider = importlib.reload(step3_subtitle_provider)
-step3_effect_provider = importlib.reload(step3_effect_provider)
+step3_provider = importlib.reload(step3_provider)
 step4_render = importlib.reload(step4_render)
 
 _REQUIRED_MUSIC_APIS = (
@@ -241,6 +234,22 @@ def apply_lofi_style() -> None:
         }
         .sticky-effect-preview-anchor { height: 0; overflow: hidden; }
 
+        /* Đẩy Live Preview của bước hiệu ứng sát lên đầu màn hình để dễ quan sát. */
+        div[data-testid="stVerticalBlock"]:has(.effect-liveview-top-anchor) {
+            position: sticky;
+            top: .35rem;
+            align-self: flex-start;
+            z-index: 5;
+            margin-top: -2.9rem;
+        }
+        .effect-liveview-top-anchor { height: 0; overflow: hidden; }
+        @media (max-width: 900px) {
+            div[data-testid="stVerticalBlock"]:has(.effect-liveview-top-anchor) {
+                position: static;
+                margin-top: 0;
+            }
+        }
+
         div[data-testid="stVerticalBlock"]:has(.sticky-render-preview-anchor) {
             position: sticky;
             top: 1rem;
@@ -252,13 +261,61 @@ def apply_lofi_style() -> None:
         /* Trang render gọn trong một viewport */
         .render-compact-note { color:#8f96ad; font-size:.78rem; }
         div[data-testid="stMetric"] { padding: .25rem 0 !important; }
+
+
+        /* Workspace layout 2026: rõ vai trò, giảm nhiễu, preview cố định */
+        :root {
+            --studio-bg: #0b0d12;
+            --studio-surface: #131722;
+            --studio-surface-2: #191e2b;
+            --studio-border: #272d3d;
+            --studio-primary: #8b5cf6;
+            --studio-accent: #22d3ee;
+            --studio-text: #f8fafc;
+            --studio-muted: #94a3b8;
+        }
+        .stApp { background: var(--studio-bg) !important; }
+        .block-container { max-width: 1560px; padding-left: 1.45rem; padding-right: 1.45rem; }
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            background: var(--studio-surface);
+            border-color: var(--studio-border) !important;
+            border-radius: 10px !important;
+        }
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stTextArea"] textarea,
+        div[data-baseweb="select"] > div {
+            background: #10141e !important;
+            border-color: var(--studio-border) !important;
+        }
+        .workspace-header {
+            display:flex; align-items:center; justify-content:space-between; gap:18px;
+            padding:14px 16px; margin:0 0 18px;
+            background:var(--studio-surface); border:1px solid var(--studio-border); border-radius:10px;
+        }
+        .workspace-kicker { color:#a78bfa; font-size:.68rem; font-weight:750; letter-spacing:.12em; text-transform:uppercase; }
+        .workspace-title { color:var(--studio-text); font-size:1.05rem; font-weight:720; margin-top:3px; }
+        .workspace-meta { color:var(--studio-muted); font-size:.76rem; text-align:right; }
+        .save-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; margin-right:6px; }
+        .asset-status { display:grid; grid-template-columns:1fr auto; gap:7px 10px; font-size:.76rem; }
+        .asset-status span { color:var(--studio-muted); }
+        .asset-status b { color:#cbd5e1; font-weight:650; }
+        .asset-ok { color:#22c55e !important; }
+        .asset-wait { color:#64748b !important; }
+        .section-intro { color:var(--studio-muted); font-size:.84rem; margin:-.25rem 0 1rem; }
+        div[data-baseweb="tab-list"] { position:sticky; top:.25rem; z-index:4; background:var(--studio-bg); padding:.25rem 0; }
+        button[data-baseweb="tab"][aria-selected="true"] { border-color:var(--studio-primary) !important; background:#201a35 !important; }
+        .preview-label { color:var(--studio-muted); font-size:.72rem; font-weight:700; letter-spacing:.1em; text-transform:uppercase; margin-bottom:.5rem; }
+        @media (max-width: 1050px) {
+            .workspace-header { align-items:flex-start; flex-direction:column; }
+            .workspace-meta { text-align:left; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
-APP_STATE_FILE = config.BASE_DIR / "data" / "review_app_state.json"
-PROMPT_SETTINGS_FILE = config.BASE_DIR / "data" / "prompt_api_settings.json"
+APP_STATE_FILE = config.BASE_DIR / "data" / "cache" / "review_app_state.json"
+PROMPT_SETTINGS_FILE = getattr(config, "PROMPT_SETTINGS_FILE", config.BASE_DIR / "data" / "config" / "prompt_api_settings.json")
 PROMPT_SETTING_KEYS = (
     "prompt_provider_choice", "prompt_api_key", "prompt_api_url",
     "prompt_api_model", "prompt_profile_choice",
@@ -283,6 +340,7 @@ PERSISTED_STATE_KEYS = (
     "effect_preview_key", "final_video_path", "output_dir", "image_provider",
     "sd_api_url", "sd_checkpoint", "sd_install_dir", "sd_mode",
     "current_step", "vibe_mode", "effect_enabled", "motion_mode", "previews_dict",
+    "remix_enabled", "remix_settings", "mix_audio_paths",
     "effect_live_opacity", "effect_live_speed", "effect_live_blend_mode",
     "effect_type_choice", "effect_key_color", "effect_chroma_similarity",
     "effect_chroma_softness", "effect_despill", "effect_edge_feather",
@@ -353,9 +411,10 @@ def init_session_state() -> None:
         "hf_model_id": "stabilityai/stable-diffusion-xl-base-1.0",
         "pexels_api_key": "",
         "prompt_provider_choice": prompt_settings.get("prompt_provider_choice", "Gemini"),
-        "prompt_api_key": prompt_settings.get("prompt_api_key", getattr(config, "PROMPT_API_KEY", "")),
+        # Trống trong file settings -> đọc từ .env (config.PROMPT_API_KEY) làm mặc định.
+        "prompt_api_key": prompt_settings.get("prompt_api_key") or getattr(config, "PROMPT_API_KEY", ""),
         "prompt_api_url": prompt_settings.get("prompt_api_url", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"),
-        "prompt_api_model": prompt_settings.get("prompt_api_model", "gemini-2.5-flash"),
+        "prompt_api_model": prompt_settings.get("prompt_api_model", "gemini-3.1-flash-lite"),
         "prompt_profile_choice": prompt_settings.get("prompt_profile_choice", "Tự động"),
         "current_step": 1,
         "vibe_mode": "clean",
@@ -409,140 +468,6 @@ def init_session_state() -> None:
             st.session_state.candidates = []
 
 
-def capture_youtube_trend_snapshot_compat(track: dict) -> dict:
-    """Fallback local khi module step1 đang bị Python cache hoặc lệch phiên bản."""
-    capture = getattr(step1_music_hunter, "capture_youtube_trend_snapshot", None)
-    if callable(capture):
-        return capture(track)
-
-    import sqlite3
-    import subprocess
-    import sys
-    from datetime import datetime, timezone
-
-    url = (track or {}).get("url")
-    if not url:
-        raise ValueError("Bài nhạc không có URL nguồn.")
-
-    result = subprocess.run(
-        [sys.executable, "-m", "yt_dlp", "--dump-single-json", "--no-playlist", "--no-warnings", url],
-        capture_output=True,
-        text=True,
-        check=True,
-        encoding="utf-8",
-        errors="ignore",
-        timeout=60,
-    )
-    entry = json.loads(result.stdout)
-    current = dict(track)
-    current.update({
-        "title": entry.get("title") or current.get("title") or "Untitled",
-        "author": entry.get("uploader") or entry.get("channel") or current.get("author") or "Unknown",
-        "views": int(entry.get("view_count") or 0),
-        "likes": int(entry.get("like_count") or 0),
-        "comments": int(entry.get("comment_count") or 0),
-        "duration": int(entry.get("duration") or current.get("duration") or 0),
-        "upload_date": entry.get("upload_date") or current.get("upload_date") or "",
-    })
-
-    track_id = str(current.get("track_id") or entry.get("id") or "")
-    if not track_id:
-        raise ValueError("Bài nhạc thiếu track_id.")
-    db_path = config.BASE_DIR / "data" / "music_trends.sqlite3"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    captured_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS music_trend_snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                track_id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                title TEXT,
-                author TEXT,
-                url TEXT,
-                views INTEGER NOT NULL DEFAULT 0,
-                likes INTEGER NOT NULL DEFAULT 0,
-                comments INTEGER NOT NULL DEFAULT 0,
-                captured_at_utc TEXT NOT NULL
-            )
-        """)
-        conn.execute(
-            """INSERT INTO music_trend_snapshots
-               (track_id, source, title, author, url, views, likes, comments, captured_at_utc)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (track_id, current.get("source", "YouTube"), current.get("title"), current.get("author"),
-             url, current["views"], current["likes"], current["comments"], captured_at),
-        )
-        conn.commit()
-        rows = conn.execute(
-            """SELECT views, likes, comments, captured_at_utc
-               FROM music_trend_snapshots WHERE track_id = ?
-               ORDER BY captured_at_utc ASC, id ASC""",
-            (track_id,),
-        ).fetchall()
-    finally:
-        conn.close()
-
-    analysis = {
-        "track": current,
-        "snapshot_count": len(rows),
-        "captured_at_utc": captured_at,
-        "trend_label": "Chưa đủ dữ liệu",
-        "confidence": "Thấp",
-        "growth_percent": None,
-        "views_delta": None,
-        "elapsed_hours": None,
-        "trend_score": None,
-    }
-    if len(rows) < 2:
-        return analysis
-
-    first, last = rows[0], rows[-1]
-    start = datetime.fromisoformat(first["captured_at_utc"].replace("Z", "+00:00"))
-    end = datetime.fromisoformat(last["captured_at_utc"].replace("Z", "+00:00"))
-    elapsed_hours = max((end - start).total_seconds() / 3600, 0.0)
-    views_delta = max(int(last["views"]) - int(first["views"]), 0)
-    growth_percent = views_delta / max(int(first["views"]), 1) * 100
-    interaction_delta = max(
-        int(last["likes"]) + int(last["comments"]) - int(first["likes"]) - int(first["comments"]),
-        0,
-    )
-    daily_growth = growth_percent / max(elapsed_hours / 24, 0.25)
-    engagement_signal = min(interaction_delta / max(views_delta, 1) * 100, 10)
-    score = min(100, round(daily_growth * 12 + engagement_signal * 3))
-    label = "Tăng mạnh" if score >= 80 else "Đang tăng" if score >= 60 else "Ổn định" if score >= 40 else "Tăng nhẹ" if score >= 20 else "Chưa có tín hiệu"
-    confidence = "Cao" if len(rows) >= 5 and elapsed_hours >= 72 else "Trung bình" if len(rows) >= 3 and elapsed_hours >= 24 else "Thấp"
-    analysis.update({
-        "trend_label": label,
-        "confidence": confidence,
-        "growth_percent": round(growth_percent, 2),
-        "views_delta": views_delta,
-        "elapsed_hours": round(elapsed_hours, 1),
-        "trend_score": score,
-    })
-    return analysis
-
-
-def build_cross_platform_trend_compat(youtube: dict | None, lastfm: dict | None) -> dict:
-    builder = getattr(step1_music_hunter, "build_cross_platform_trend", None)
-    if callable(builder):
-        return builder(youtube, lastfm)
-    sources = []
-    if youtube and youtube.get("trend_score") is not None:
-        sources.append(("YouTube", float(youtube["trend_score"]), 0.85))
-    if lastfm and lastfm.get("lastfm_score") is not None:
-        sources.append(("Last.fm", float(lastfm["lastfm_score"]), 0.15))
-    if not sources:
-        return {"score": None, "label": "Chưa đủ dữ liệu", "confidence": "Thấp", "sources": []}
-    total_weight = sum(weight for _, _, weight in sources)
-    score = round(sum(value * weight for _, value, weight in sources) / total_weight)
-    label = "Bắt trend mạnh" if score >= 80 else "Có tiềm năng" if score >= 65 else "Theo dõi thêm" if score >= 50 else "Tín hiệu yếu"
-    return {"score": score, "label": label, "confidence": "Trung bình" if len(sources) >= 2 else "Thấp", "sources": [name for name, _, _ in sources]}
-
-
 def format_num(num: int) -> str:
     """Rút gọn số lượt xem/lượt thích."""
     if not num:
@@ -572,25 +497,12 @@ if "current_step" not in st.session_state:
 WIZARD_STEPS = {
     1: "⚙️ Kiểm tra hệ thống",
     2: "🎵 Chọn nhạc",
-    3: "🎨 Tạo ảnh nền",
-    4: "🎤 Tạo phụ đề",
-    5: "✨ Chọn hiệu ứng",
+    3: "🎚️ Chỉnh âm / Remix",
+    4: "🖼️ Tạo ảnh nền",
+    5: "✨ Hiệu ứng & Chữ",
     6: "🚀 Render video",
     7: "📤 Upload YouTube",
 }
-
-
-# Subtitle follows visual effects so its preview uses the selected final scene.
-WIZARD_STEPS.update({4: "✨ Chọn hiệu ứng", 5: "🎤 Tạo phụ đề"})
-
-def render_wizard_header():
-    current = st.session_state.get("current_step", 1)
-    labels = []
-    for step, title in WIZARD_STEPS.items():
-        prefix = "🟣" if step == current else "⚪"
-        labels.append(f"{prefix} {step}. {title}")
-    st.caption("  →  ".join(labels))
-
 
 def load_project_to_session_state(project_id: str):
     """Đồng bộ cấu hình từ database SQLite vào session state."""
@@ -624,6 +536,74 @@ def load_project_to_session_state(project_id: str):
         
     st.session_state["text_profile"] = p
 
+# Model Gemini free-tier đã xác nhận trên dashboard (flash-lite đứng đầu: 500 RPD/ngày).
+GEMINI_MODEL_OPTIONS = [
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3-flash",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+]
+
+def _mask_api_key(key: str) -> str:
+    """Che API key để hiển thị: giữ 4 ký tự đầu + 6 ký tự cuối (vd AIza…7I6xCw)."""
+    key = str(key or "").strip()
+    if not key:
+        return ""
+    if len(key) <= 12:
+        return "•" * len(key)
+    return f"{key[:4]}…{key[-6:]}"
+
+def _clear_prompt_api_key() -> None:
+    """Callback nút Xoá: xoá key khỏi session + config + file settings.
+    Chạy trước khi widget dựng lại nên được phép sửa session_state có key."""
+    st.session_state["prompt_api_key"] = ""
+    config.PROMPT_API_KEY = ""
+    save_prompt_settings()
+
+def render_prompt_api_settings() -> None:
+    """UI cấu hình LLM dùng chung (Gemini / OpenAI-compat): nhập key, chọn model,
+    xem preview key đã lưu (che) và nút xoá. Tự lưu ra prompt_api_settings.json.
+    Đặt trong sidebar để truy cập ở mọi bước."""
+    provider = st.selectbox(
+        "Nhà cung cấp",
+        ["Gemini", "API tương thích OpenAI"],
+        key="prompt_provider_choice",
+    )
+    # Bind trực tiếp vào session_state qua key -> nút Xoá xoá được cả ô nhập.
+    # init_session_state() đã đặt mặc định (file settings hoặc .env) trước khi widget dựng.
+    st.text_input(
+        "API key",
+        type="password",
+        placeholder="Dán API key Gemini tại đây",
+        key="prompt_api_key",
+    )
+    saved_key = str(st.session_state.get("prompt_api_key") or "").strip()
+    if saved_key:
+        col_info, col_clear = st.columns([3, 1])
+        col_info.caption(f"Key đã lưu: `{_mask_api_key(saved_key)}`")
+        col_clear.button(
+            "Xoá", key="clear_prompt_api_key",
+            use_container_width=True, on_click=_clear_prompt_api_key,
+        )
+    if provider == "Gemini":
+        current_model = st.session_state.get("prompt_api_model", GEMINI_MODEL_OPTIONS[0])
+        model_index = GEMINI_MODEL_OPTIONS.index(current_model) if current_model in GEMINI_MODEL_OPTIONS else 0
+        st.session_state.prompt_api_model = st.selectbox("Model", GEMINI_MODEL_OPTIONS, index=model_index)
+        st.session_state.prompt_api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    else:
+        st.session_state.prompt_api_url = st.text_input(
+            "API URL", value=st.session_state.get("prompt_api_url", ""),
+        )
+        st.session_state.prompt_api_model = st.text_input(
+            "Model", value=st.session_state.get("prompt_api_model", ""),
+        )
+    st.caption(
+        "Đã kết nối Gemini" if saved_key
+        else "Chưa có key · hệ thống vẫn dùng fallback anime"
+    )
+    save_prompt_settings()
+
 def render_local_sidebar():
     """Thanh tiến trình tối giản, khóa các bước chưa đủ điều kiện."""
     def path_ok(value) -> bool:
@@ -636,11 +616,13 @@ def render_local_sidebar():
     has_image = path_ok(st.session_state.get("image_path"))
     has_final_video = path_ok(st.session_state.get("final_video_path"))
     current = int(st.session_state.get("current_step", 1))
-    unlocked_step = 3 if has_track else 2
-    if has_image:
-        unlocked_step = 5
+    unlocked_step = 2
+    if has_track:
+        unlocked_step = 3
+    if has_track and has_image:
+        unlocked_step = 6  # Mở khóa toàn bộ tới bước Render (bước 5) và cho phép xem upload (bước 6) nếu đã có video
     if has_final_video:
-        unlocked_step = 6
+        unlocked_step = 7  # Mở khóa tất cả các bước bao gồm cả Upload (bước 6)
 
     with st.sidebar:
         st.markdown("<div class='sidebar-brand'>Lo-Fi Studio<span>Trình tạo video</span></div>", unsafe_allow_html=True)
@@ -662,6 +644,16 @@ def render_local_sidebar():
                 st.rerun()
 
         st.divider()
+        st.caption("TÀI NGUYÊN")
+        st.markdown(
+            f"""<div class="asset-status">
+            <span>Nhạc</span><b class="{'asset-ok' if has_track else 'asset-wait'}">{'Sẵn sàng' if has_track else 'Chưa chọn'}</b>
+            <span>Ảnh nền</span><b class="{'asset-ok' if has_image else 'asset-wait'}">{'Sẵn sàng' if has_image else 'Chưa chọn'}</b>
+            <span>Video cuối</span><b class="{'asset-ok' if has_final_video else 'asset-wait'}">{'Sẵn sàng' if has_final_video else 'Chưa render'}</b>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+        st.divider()
         st.caption("DỰ ÁN")
         st.code(st.session_state.get("project_id", "lofi_default_prj"), language=None)
         with st.expander("Cài đặt"):
@@ -681,6 +673,24 @@ def render_local_sidebar():
                 st.session_state.clear()
                 st.session_state.update({key: value for key, value in preserved_settings.items() if value is not None})
                 st.rerun()
+
+        with st.expander("🔑 Cài đặt AI (Gemini)"):
+            render_prompt_api_settings()
+
+def render_workspace_header() -> None:
+    """Header chung: tên bước, dự án và trạng thái lưu; không lặp thanh wizard."""
+    current = int(st.session_state.get("current_step", 1))
+    raw_title = WIZARD_STEPS.get(current, "Lo-Fi Studio")
+    title = raw_title.split(" ", 1)[-1]
+    project_id = st.session_state.get("project_id", "lofi_default_prj")
+    st.markdown(
+        f"""<div class="workspace-header">
+        <div><div class="workspace-kicker">Bước {current:02d} / {len(WIZARD_STEPS):02d}</div>
+        <div class="workspace-title">{html.escape(title)}</div></div>
+        <div class="workspace-meta"><span class="save-dot"></span>Đã tự động lưu<br>{html.escape(str(project_id))}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
 
 def build_image_prompt_from_track(track: dict, variant: int = 0) -> str:
     """Tạo prompt fallback đa dạng; nhạc Trung luôn có nhân vật cổ phong."""
@@ -895,15 +905,10 @@ def suggest_effect_query_from_track(track: dict) -> str:
 @st.cache_data(ttl=86400, show_spinner=False)
 def _search_pixabay_effects_cached(query: str, api_key: str) -> list[dict]:
     """Cache metadata Pixabay 24 giờ; video chỉ tải khi người dùng chọn."""
-    return step3_effect_provider.search_pixabay_effects(query, api_key, max_results=12)
+    return step3_provider.search_pixabay_effects(query, api_key, max_results=12)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
-def _search_ai_effects_cached(profile_json: str, api_key: str) -> list[dict]:
-    """Cache kết quả Pixabay đã được xếp hạng theo hồ sơ AI."""
-    return step3_effect_provider.search_and_rank_pixabay_effects(json.loads(profile_json), api_key)
-
-
 def _apply_ai_effect_settings(profile: dict) -> None:
     st.session_state.effect_live_opacity = float(profile.get("opacity", 0.55))
     st.session_state.effect_live_speed = float(profile.get("speed", 1.0))
@@ -932,6 +937,12 @@ def _select_effect_path(effect_path: Path) -> None:
     st.session_state.effect_path = str(Path(effect_path).resolve())
     st.session_state.effect_preview_path = None
     st.session_state.effect_preview_key = None
+    try:
+        metadata = step3_provider.get_effect_metadata(effect_path)
+        if metadata and metadata.get("effect_type"):
+            _apply_recommended_composite(metadata)
+    except Exception:
+        pass
 
 
 
@@ -968,7 +979,7 @@ def _select_track(track: dict, go_next: bool = True):
         from core.text.effect_manifest import save_text_profile
         project_id = st.session_state.get("project_id", "lofi_default_prj")
         p = text_effect_provider.default_text_profile()
-        p["content"] = track.get("title", "")
+        p["content"] = ""
         st.session_state["text_profile"] = p
         save_text_profile(project_id, p)
     except Exception:
@@ -980,26 +991,6 @@ def _toggle_music_preview(track_id: str) -> None:
     """Chỉ cho phép một bài mở trình nghe thử tại một thời điểm."""
     current = st.session_state.get("music_preview_track_id")
     st.session_state.music_preview_track_id = None if current == track_id else track_id
-
-
-def _format_track_age(hours: float) -> str:
-    hours = max(float(hours or 0), 0)
-    if hours < 24:
-        return f"{hours:.0f}h"
-    return f"{hours / 24:.1f}d"
-
-
-def _track_has_india_signal(track: dict) -> bool:
-    """Nhận diện dấu hiệu nhạc Ấn Độ từ vùng quét và metadata, chỉ dùng cho bộ lọc giao diện."""
-    if "IN" in (track.get("market_codes") or []):
-        return True
-    text = " ".join(str(track.get(key) or "") for key in ("title", "author", "description")).lower()
-    markers = (
-        " india ", "indian", "hindi", "bollywood", "punjabi", "tamil", "telugu",
-        "bengali", "malayalam", "kannada", "marathi", "bhojpuri",
-    )
-    padded = f" {text} "
-    return any(marker in padded for marker in markers)
 
 
 def _toggle_track_details(track_id: str) -> None:
@@ -1081,32 +1072,1169 @@ def _render_compact_track_row(track: dict, rank: int, key_prefix: str, show_tren
         st.markdown("<div class='feed-divider'></div>", unsafe_allow_html=True)
 
 
-def _apply_trend_preset(preset_query: str, force_creative_commons: bool = False) -> None:
-    """Callback chạy trước rerun nên cập nhật text_input an toàn."""
-    st.session_state.trend_query = preset_query
-    st.session_state.compact_trend_query = preset_query
-    if force_creative_commons:
-        st.session_state.compact_license_filter = "Creative Commons"
+
+def _short_error_message(error, provider_name: str = "") -> str:
+    """Rút gọn lỗi kỹ thuật để UI dễ đọc."""
+    text = str(error or "")
+    provider_name = provider_name or ""
+
+    if "HuggingFaceProvider" in text or "has no attribute" in text:
+        return "File step2_image_provider.py chưa cập nhật. Hãy chép file mới hoặc chọn nguồn ảnh khác."
+    if "AIHordeProvider" in text:
+        return "File step2_image_provider.py chưa cập nhật AI Horde. Hãy chép file mới hoặc chọn nguồn khác."
+    if "429" in text or "Too Many Requests" in text:
+        return "Nguồn tạo ảnh đang giới hạn lượt. Đợi vài phút hoặc đổi nguồn khác."
+    if "530" in text:
+        return "Máy chủ tạo ảnh đang lỗi tạm thời. Hãy đổi nguồn khác hoặc thử lại sau."
+    if "503" in text:
+        return "Model đang tải hoặc máy chủ đang bận. Hãy thử lại sau."
+    if "401" in text or "Unauthorized" in text:
+        return "API key/token không đúng hoặc đã hết quyền dùng."
+    if "402" in text or "Insufficient" in text:
+        return "Tài khoản/API đã hết credit. Hãy đổi nguồn khác."
+    if "Connection" in text or "Failed to establish" in text or "Max retries" in text:
+        return "Chưa kết nối được nguồn tạo ảnh. Kiểm tra mạng hoặc nguồn đang chạy chưa."
+    if "timeout" in text.lower() or "timed out" in text.lower():
+        return "Nguồn tạo ảnh phản hồi quá lâu. Hãy thử lại hoặc đổi nguồn khác."
+    if "Chưa nhập Hugging Face token" in text:
+        return "Bạn chưa nhập Hugging Face token."
+
+    clean = text.replace("\n", " ").strip()
+    if len(clean) > 180:
+        clean = clean[:180].rstrip() + "..."
+    return f"Lỗi sinh ảnh: {clean}" if clean else "Lỗi sinh ảnh không rõ."
 
 
-def _apply_market_preset(market_codes: list[str]) -> None:
-    """Áp nhanh nhóm thị trường và giữ đúng giới hạn cấu hình."""
-    available = getattr(config, "YOUTUBE_MARKETS", {})
-    limit = int(getattr(config, "YOUTUBE_TREND_MAX_MARKETS_PER_SCAN", 8))
-    selected = []
-    for code in market_codes:
-        code = str(code or "").strip().upper()
-        if code in available and code not in selected:
-            selected.append(code)
-    selected = selected[:limit]
-    st.session_state.trend_markets = selected
-    st.session_state.compact_trend_regions = selected
+def _scale_and_register_image(raw_path: Path, provider_name: str, prompt_text: str) -> Path:
+    from step2_image_provider import scale_image_ffmpeg, validate_image_file
+    from core.runtime.db import get_db_connection
+    from core.runtime.schemas import validate_data_schema
+    from core.runtime.project_manager import ProjectManager
+    from core.runtime.cache_manager import CacheManager
+    import json
+    from datetime import datetime, timezone
+    
+    full_hd_path = config.TEMP_IMAGE_DIR / f"bg_full_hd_{random.randint(1000, 9999)}.png"
+    scale_image_ffmpeg(raw_path, full_hd_path, 1920, 1080)
+    validate_image_file(full_hd_path)
+    
+    try:
+        raw_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+        
+    file_sha256 = CacheManager.get_file_sha256(full_hd_path)
+    file_size = full_hd_path.stat().st_size
+    
+    image_meta = {
+        "schema_name": "image_metadata",
+        "schema_version": 1,
+        "provider": provider_name,
+        "model": st.session_state.get("sd_checkpoint", "unknown_model"),
+        "prompt": prompt_text,
+        "negative_prompt": getattr(config, "IMAGE_NEGATIVE_PROMPT", ""),
+        "seed": random.randint(100000, 999999),
+        "source_size": "960x540",
+        "final_size": "1920x1080",
+        "upscale_method": "lanczos",
+        "source_path": f"data/cache/temp_image/{full_hd_path.name}",
+        "full_hd_path": f"data/cache/temp_image/{full_hd_path.name}"
+    }
+    
+    validate_data_schema(image_meta, "image_metadata")
+    
+    meta_path = config.METADATA_DIR / f"image_{file_sha256[:12]}.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(image_meta, f, ensure_ascii=False, indent=2)
 
+    p_id = st.session_state.get("project_id", "lofi_default_prj")
+    conn = get_db_connection()
+    try:
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        asset_id = f"image_{file_sha256[:12]}"
+        with conn:
+            conn.execute("""
+            INSERT OR REPLACE INTO assets (asset_id, project_id, path, sha256, mime_type, size_bytes, processing_status, review_status, created_at_utc)
+            VALUES (?, ?, ?, ?, 'image/png', ?, 'verified', 'approved', ?);
+            """, (asset_id, p_id, f"data/cache/temp_image/{full_hd_path.name}", file_sha256, file_size, now_str))
+            
+        ProjectManager.update_workflow_status(
+            project_id=p_id,
+            module_name="image",
+            processing_status="verified",
+            review_status="approved",
+            input_hash=file_sha256,
+            output_hash=file_sha256,
+            reason=f"Image generated via {provider_name} and scaled to Full HD 1920x1080.",
+            actor="review_app"
+        )
+    finally:
+        conn.close()
+        
+    return full_hd_path
+
+def _generate_image_with_fallback(prompt_text: str, provider_name: str):
+    """Tạo ảnh nền, tự fallback sang SD Local nếu Pollinations bị giới hạn."""
+    config.POLLINATIONS_API_KEY = st.session_state.pollinations_key
+    config.SD_LOCAL_API_URL = st.session_state.sd_api_url
+    config.SD_LOCAL_CHECKPOINT = st.session_state.sd_checkpoint
+    config.TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = config.TEMP_IMAGE_DIR / f"bg_{random.randint(1000, 9999)}.png"
+
+    try:
+        if "Pollinations" in provider_name:
+            provider = step2_image_provider.PollinationsProvider()
+        elif "AI Horde" in provider_name or "Stable Horde" in provider_name:
+            if not hasattr(step2_image_provider, "AIHordeProvider"):
+                return None, "File step2_image_provider.py chưa cập nhật AI Horde. Hãy chép file mới hoặc chọn nguồn khác."
+            provider = step2_image_provider.AIHordeProvider(st.session_state.get("ai_horde_key", "0000000000"))
+        elif "Hugging Face" in provider_name:
+            if not hasattr(step2_image_provider, "HuggingFaceProvider"):
+                return None, "File step2_image_provider.py chưa cập nhật Hugging Face. Hãy chép file mới hoặc chọn nguồn khác."
+            provider = step2_image_provider.HuggingFaceProvider(
+                token=st.session_state.get("hf_token", ""),
+                model_id=st.session_state.get("hf_model_id", "stabilityai/stable-diffusion-xl-base-1.0"),
+            )
+        elif "Cloudflare" in provider_name:
+            config.CLOUDFLARE_ACCOUNT_ID = st.session_state.get("cf_account_id", "") or config.CLOUDFLARE_ACCOUNT_ID
+            config.CLOUDFLARE_API_TOKEN = st.session_state.get("cf_api_token", "") or config.CLOUDFLARE_API_TOKEN
+            provider = step2_image_provider.CloudflareWorkersAIProvider()
+        else:
+            provider = step2_image_provider.SDLocalProvider()
+        
+        raw_img = provider.generate(prompt_text, out_path)
+        final_img = _scale_and_register_image(raw_img, provider_name, prompt_text)
+        return final_img, None
+    except Exception as e:
+        error_text = str(e)
+        is_rate_limit = "Pollinations" in provider_name and ("429" in error_text or "Too Many Requests" in error_text)
+        if is_rate_limit:
+            try:
+                fallback_path = config.TEMP_IMAGE_DIR / f"bg_sd_{random.randint(1000, 9999)}.png"
+                fallback_provider = step2_image_provider.SDLocalProvider()
+                raw_fallback = fallback_provider.generate(prompt_text, fallback_path)
+                final_fallback = _scale_and_register_image(raw_fallback, "SD Local (Fallback)", prompt_text)
+                return final_fallback, "Pollinations đang giới hạn lượt tạo ảnh, đã chuyển sang SD Local."
+            except Exception as sd_error:
+                return None, (
+                    "Pollinations đang giới hạn lượt tạo ảnh. SD Local cũng chưa chạy được. "
+                    "Hãy mở Stable Diffusion WebUI/ComfyUI local hoặc đợi vài phút rồi thử lại.\n"
+                    f"Chi tiết SD Local: {sd_error}"
+                )
+        return None, _short_error_message(e, provider_name)
+
+
+def _prepare_uploaded_background(input_path: Path, output_path: Path, zoom_percent: int = 2) -> Path:
+    """Cắt giữa 16:9, phóng mép và xuất Full HD, không phụ thuộc module step2."""
+    import subprocess
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    if not input_path.exists():
+        raise FileNotFoundError(f"Không tìm thấy ảnh upload: {input_path}")
+
+    zoom_percent = max(0, min(int(zoom_percent), 20))
+    keep_ratio = max(0.80, 1.0 - zoom_percent / 100.0)
+    target_ratio = 16 / 9
+    crop_filter = (
+        f"crop='if(gt(iw/ih,{target_ratio}),ih*{target_ratio},iw)*{keep_ratio}':"
+        f"'if(gt(iw/ih,{target_ratio}),ih,iw/{target_ratio})*{keep_ratio}':"
+        "(iw-ow)/2:(ih-oh)/2,scale=1920:1080:flags=lanczos,setsar=1"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y", "-i", str(input_path),
+        "-vf", crop_filter, "-frames:v", "1", str(output_path),
+    ]
+    try:
+        subprocess.run(
+            cmd, capture_output=True, text=True, check=True,
+            encoding="utf-8", errors="ignore", timeout=90,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Không tìm thấy FFmpeg trong PATH.") from exc
+    except subprocess.CalledProcessError as exc:
+        lines = (exc.stderr or exc.stdout or "FFmpeg không trả chi tiết").strip().splitlines()
+        detail = lines[-1] if lines else "Không rõ lỗi"
+        raise RuntimeError(f"FFmpeg xử lý ảnh lỗi: {detail}") from exc
+
+    if not output_path.exists() or output_path.stat().st_size < 1024:
+        raise RuntimeError("Ảnh Full HD không được tạo hoặc file quá nhỏ.")
+    return output_path
+
+
+def _render_typography_controls_inline(project_id: str, track: dict) -> None:
+    """Giao diện Chữ nghệ thuật AI nhúng trực tiếp vào cột trái."""
+    from core.text import provider as text_effect_provider
+    from core.text.effect_manifest import load_text_profile, save_text_profile
+    from core.text.effect_renderer import POSITIONS
+
+    if not st.session_state.get("text_profile"):
+        loaded = load_text_profile(project_id)
+        st.session_state["text_profile"] = (
+            text_effect_provider.normalize_text_profile(loaded)
+            if loaded else text_effect_provider.default_text_profile()
+        )
+
+    p = dict(st.session_state["text_profile"] or {})
+    p.setdefault("enabled", True)
+    p.setdefault("content", "")
+    p.setdefault("secondary_text", "")
+    p.setdefault("writing_direction", "vertical")
+    p.setdefault("visual_anchor", "beside_character")
+    p.setdefault("avoid_subject", True)
+    p["design_goal"] = "decorative_video_typography"
+
+    header_col, toggle_col = st.columns([1.0, 0.42], vertical_alignment="center")
+    with header_col:
+        st.caption("Typography trang trí được đặt trực tiếp lên khung hình, không phải phụ đề.")
+    with toggle_col:
+        p["enabled"] = st.toggle(
+            "Hiển thị chữ", value=bool(p.get("enabled", True)), key="text_enabled_cb_step4"
+        )
+
+    if not p["enabled"]:
+        st.info("Chữ nghệ thuật đang tắt. Video sẽ được render không có lớp chữ trang trí.")
+        st.session_state["text_profile"] = p
+        save_text_profile(project_id, p)
+        return
+
+    if st.button("✨ AI thiết kế chữ theo bài nhạc và ảnh", type="primary", use_container_width=True, key="ai_design_typo_btn"):
+        try:
+            with st.spinner("Đang phân tích mood, nội dung và bố cục ảnh..."):
+                music_tags = track.get("style_tags") or []
+                if isinstance(music_tags, str):
+                    music_tags = [item.strip() for item in music_tags.split(",") if item.strip()]
+                ai_context = dict(p)
+                ai_context.update({
+                    "design_goal": "decorative_video_typography",
+                    "not_subtitles": True,
+                    "prefer_short_phrase": True,
+                    "suggest_translation": True,
+                    "place_beside_character": True,
+                    "avoid_subject": True,
+                })
+                config.PROMPT_API_URL = str(
+                    st.session_state.get("prompt_api_url") or getattr(config, "PROMPT_API_URL", "")
+                )
+                config.PROMPT_API_KEY = str(
+                    st.session_state.get("prompt_api_key") or getattr(config, "PROMPT_API_KEY", "")
+                )
+                config.PROMPT_API_MODEL = str(
+                    st.session_state.get("prompt_api_model") or getattr(config, "PROMPT_API_MODEL", "openai")
+                )
+                ai_profile = text_effect_provider.build_ai_text_profile(
+                    track=track,
+                    music_tags=list(music_tags),
+                    image_context=str(st.session_state.get("image_prompt") or ""),
+                    content="",
+                    current=ai_context,
+                )
+                ai_profile = text_effect_provider.normalize_text_profile(ai_profile)
+                ai_profile.setdefault("secondary_text", p.get("secondary_text", ""))
+                ai_profile.setdefault("writing_direction", p.get("writing_direction", "vertical"))
+                ai_profile.setdefault("visual_anchor", "beside_character")
+                ai_profile["avoid_subject"] = True
+                ai_profile["design_goal"] = "decorative_video_typography"
+                st.session_state["text_profile"] = ai_profile
+                save_text_profile(project_id, ai_profile)
+                st.session_state.effect_preview_path = None
+                st.session_state.effect_preview_key = None
+                source = str(ai_profile.get("source") or "fallback").lower()
+                st.session_state["typography_ai_status"] = (
+                    "AI online" if source not in ("fallback", "default", "local") else "Gợi ý local dự phòng"
+                )
+                st.rerun()
+        except Exception as exc:
+            st.error(f"Không tạo được thiết kế chữ: {exc}")
+
+    st.markdown("##### Nội dung")
+    main_col, sub_col = st.columns(2)
+    with main_col:
+        p["content"] = st.text_input(
+            "Chữ chính",
+            value=str(p.get("content") or ""),
+            max_chars=80,
+            placeholder="Ví dụ: 山河如梦",
+            key="typo_main_content",
+            help="Nên dùng cụm ngắn từ 2 đến 8 chữ.",
+        ).strip()
+    with sub_col:
+        p["secondary_text"] = st.text_input(
+            "Chữ phụ, phiên âm hoặc dịch",
+            value=str(p.get("secondary_text") or ""),
+            max_chars=120,
+            key="typo_sub_content",
+            placeholder="Ví dụ: Sơn hà như mộng",
+        ).strip()
+
+    st.markdown("##### Bố cục")
+    direction_col, anchor_col, position_col = st.columns(3)
+    with direction_col:
+        directions = ["vertical", "horizontal"]
+        direction = p.get("writing_direction", "vertical")
+        if direction not in directions:
+            direction = "vertical"
+        p["writing_direction"] = st.segmented_control(
+            "Hướng chữ",
+            directions,
+            default=direction,
+            key="typo_direction",
+            format_func=lambda value: {"vertical": "Dọc", "horizontal": "Ngang"}[value],
+        ) or direction
+    with anchor_col:
+        anchors = ["beside_character", "negative_space", "free"]
+        anchor = p.get("visual_anchor", "beside_character")
+        if anchor not in anchors:
+            anchor = "beside_character"
+        anchor_labels = {
+            "beside_character": "Cạnh nhân vật",
+            "negative_space": "Vùng trống",
+            "free": "Tùy chọn",
+        }
+        p["visual_anchor"] = st.selectbox(
+            "Ưu tiên đặt chữ", anchors, index=anchors.index(anchor),
+            key="typo_anchor",
+            format_func=lambda value: anchor_labels[value],
+        )
+    with position_col:
+        positions = list(POSITIONS.keys())
+        position = p.get("position", "center_right")
+        if position not in positions:
+            position = "bottom_center" if "bottom_center" in positions else positions[0]
+        position_labels = {
+            "bottom_left": "Dưới trái", "bottom_center": "Dưới giữa", "bottom_right": "Dưới phải",
+            "center_left": "Giữa trái", "center": "Chính giữa", "center_right": "Giữa phải",
+            "top_left": "Trên trái", "top_center": "Trên giữa", "top_right": "Trên phải",
+        }
+        p["position"] = st.selectbox(
+            "Vị trí", positions, index=positions.index(position),
+            key="typo_position",
+            format_func=lambda value: position_labels.get(value, value),
+        )
+
+    p["avoid_subject"] = st.checkbox(
+        "Tránh che nhân vật chính",
+        value=bool(p.get("avoid_subject", True)),
+        key="typo_avoid_subject",
+    )
+
+    with st.expander("Kiểu chữ và màu sắc", expanded=False):
+        style_col, font_col, size_col = st.columns(3)
+        with style_col:
+            presets = list(text_effect_provider.STYLE_PRESETS)
+            preset = p.get("preset", "minimal")
+            if preset not in presets:
+                preset = presets[0]
+            p["preset"] = st.selectbox("Phong cách", presets, index=presets.index(preset), key="typo_preset")
+        with font_col:
+            fonts = list(text_effect_provider.FONT_STYLES)
+            font = p.get("font_style", "serif")
+            if font not in fonts:
+                font = fonts[0]
+            font_labels = {"sans": "Hiện đại", "serif": "Cổ điển", "display": "Trang trí"}
+            p["font_style"] = st.selectbox(
+                "Kiểu chữ", fonts, index=fonts.index(font),
+                key="typo_font_style",
+                format_func=lambda value: font_labels.get(value, value),
+            )
+        with size_col:
+            p["font_size"] = st.slider("Cỡ chữ", 16, 200, int(p.get("font_size", 72)), key="typo_font_size")
+
+        color_col, outline_col, width_col = st.columns(3)
+        with color_col:
+            p["text_color"] = st.color_picker("Màu chữ", value=p.get("text_color", "#FFFFFF"), key="typo_text_color")
+        with outline_col:
+            p["outline_color"] = st.color_picker("Màu viền", value=p.get("outline_color", "#101820"), key="typo_outline_color")
+        with width_col:
+            p["outline_width"] = st.slider(
+                "Độ dày viền", 0.0, 8.0, float(p.get("outline_width", 2.0)), 0.5, key="typo_outline_width"
+            )
+        p["bold"] = st.checkbox("Chữ đậm", value=bool(p.get("bold", True)), key="typo_bold")
+
+        p["letter_spacing"] = st.slider(
+            "Giãn ký tự", 0.0, 40.0, float(p.get("letter_spacing", 0.0) or 0.0), 1.0,
+            key="typo_letter_spacing",
+            help="Tăng khoảng cách giữa các ký tự (hợp với tiêu đề dọc kiểu cổ phong).",
+        )
+
+        # --- Con dấu đỏ (kiểu bìa nhạc Hoa ngữ) ---
+        p["seal_enabled"] = st.checkbox(
+            "Con dấu đỏ (kiểu bìa nhạc Hoa ngữ)", value=bool(p.get("seal_enabled", False)),
+            key="typo_seal_enabled",
+            help="Vẽ ô dấu đỏ chữ trắng xếp dọc cạnh tiêu đề. Tự bật cho nhạc Trung/Cổ phong.",
+        )
+        if p["seal_enabled"]:
+            seal_text_col, seal_color_col = st.columns([2, 1])
+            with seal_text_col:
+                p["seal_text"] = st.text_input(
+                    "Chữ trên dấu", value=str(p.get("seal_text") or ""), max_chars=12,
+                    key="typo_seal_text", placeholder="vd: 合唱版 / Bản Hợp Xướng",
+                )
+            with seal_color_col:
+                p["seal_color"] = st.color_picker(
+                    "Màu dấu", value=p.get("seal_color", "#B23A2E"), key="typo_seal_color"
+                )
+
+    p["intro_effect"] = "fade"
+    p["hold_effect"] = "soft_glow"
+    p["outro_effect"] = "fade"
+    p["intro_duration"] = 0.8
+    p["outro_duration"] = 1.0
+    p["start_seconds"] = 0.0
+    p["end_seconds"] = None
+
+    st.session_state["text_profile"] = p
+    save_text_profile(project_id, p)
+
+def _render_subtitle_controls_inline(project_id: str, track: dict, audio_file: Path, duration: float, manifest: dict) -> None:
+    """Giao diện Phụ đề Karaoke nhúng trực tiếp vào cột phải."""
+    import step3_provider
+    
+    manifest["enabled"] = st.checkbox("Hiển thị phụ đề trên video", value=manifest.get("enabled", True), key="sub_enabled_cb")
+
+    search_col, info_col = st.columns([1, 1], gap="medium")
+    if search_col.button("🔎 Tìm lời bài hát online", type="primary", use_container_width=True, key="search_lyrics_btn"):
+        with st.spinner("Đang tìm lời bài hát đã xuất bản..."):
+            result = step3_provider.search_online_lyrics(
+                str(track.get("title") or ""),
+                str(track.get("author") or ""),
+                duration,
+                album=str(track.get("album") or track.get("album_name") or ""),
+                musixmatch_api_key=str(
+                    st.session_state.get("musixmatch_api_key")
+                    or getattr(config, "MUSIXMATCH_API_KEY", "")
+                    or os.getenv("MUSIXMATCH_API_KEY", "")
+                ),
+            )
+        if result.get("found"):
+            st.session_state["online_lyrics_candidates"] = result["candidates"]
+            st.rerun()
+        st.warning(result.get("reason", "Không tìm thấy lời online."))
+        
+    candidates = st.session_state.get("online_lyrics_candidates") or []
+    if candidates:
+        choice = st.selectbox(
+            "Chọn đúng phiên bản lời bài hát",
+            options=list(range(len(candidates))),
+            format_func=lambda index: (
+                f"{candidates[index]['track_name']} — {candidates[index]['artist_name']}"
+                f" · {candidates[index].get('source', 'Online')}"
+                f" · {'Có timestamp' if candidates[index]['timing'] == 'synced' else 'Lời thường'}"
+                f" · khớp {float(candidates[index].get('match_score') or 0):.0f}%"
+            ),
+            key="online_lyrics_choice_combined",
+        )
+        if st.button("Dùng phiên bản này", type="primary", use_container_width=True, key="use_candidate_btn"):
+            selected = candidates[choice]
+            manifest["lyrics"] = selected["segments"]
+            manifest["lyrics_source"] = selected["source"]
+            manifest["lyrics_timing"] = selected["timing"]
+            manifest["reviewed"] = False
+            st.session_state.pop("online_lyrics_candidates", None)
+            st.rerun()
+            
+    if manifest.get("lyrics"):
+        source = manifest.get("lyrics_source") or "Nhập thủ công"
+        timing = "có timestamp" if manifest.get("lyrics_timing") == "synced" else "timestamp ước lượng"
+        info_col.success(f"Đã có {len(manifest['lyrics'])} câu · {source}")
+    else:
+        info_col.info("Chưa có lời. Hãy tìm online trước.")
+
+    with st.expander("Nguồn nâng cao và AI dự phòng", expanded=not bool(manifest.get("lyrics"))):
+        st.text_input(
+            "Musixmatch API key (không bắt buộc)",
+            type="password",
+            key="musixmatch_api_key",
+            help="Chỉ gọi Musixmatch khi LRCLIB chưa có bản timestamp khớp tốt.",
+        )
+        st.caption("Thứ tự: LRCLIB exact → LRCLIB search → Musixmatch → Whisper.")
+        whisper_ready = step3_provider.transcriber.is_whisper_installed()
+        fallback_col, paste_col = st.columns(2, gap="medium")
+        with fallback_col:
+            model = st.selectbox("Model Whisper", ["tiny", "base", "small"], index=1, key="whisper_model_select")
+            if st.button("Tạo lời bằng AI", use_container_width=True, disabled=not whisper_ready, key="whisper_transcribe_btn"):
+                try:
+                    with st.spinner("AI đang nhận dạng lời hát..."):
+                        manifest["lyrics"] = step3_provider.run_transcription(audio_file, model_name=model)
+                    manifest["lyrics_source"] = "Whisper (AI)"
+                    manifest["lyrics_timing"] = "synced"
+                    manifest["reviewed"] = False
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Không thể nhận dạng lời: {exc}")
+            if not whisper_ready:
+                st.caption("Cần cài openai-whisper để dùng lựa chọn này.")
+        with paste_col:
+            pasted = st.text_area("Dán lời (mỗi dòng một câu)", height=135, key="combined_pasted_lyrics")
+            if st.button("Dùng lời đã dán", use_container_width=True, key="use_pasted_lyrics_btn"):
+                manifest["lyrics"] = _simple_lyrics_to_segments(pasted, duration)
+                manifest["lyrics_source"] = "Nhập thủ công"
+                manifest["lyrics_timing"] = "estimated"
+                manifest["reviewed"] = False
+                st.rerun()
+
+    lyrics = manifest.get("lyrics") or []
+    if lyrics:
+        current_text = "\n".join(str(item.get("text") or "") for item in lyrics)
+        edited_text = st.text_area("Biên tập lời bài hát (mỗi dòng tương ứng một câu)", value=current_text, height=200, key="lyrics_editor_text_area")
+        edit_col, translate_col = st.columns(2)
+        if edit_col.button("Áp dụng sửa đổi", use_container_width=True, key="apply_lyrics_edit_btn"):
+            manifest["lyrics"] = _simple_lyrics_to_segments(edited_text, duration)
+            manifest["lyrics_timing"] = "estimated"
+            manifest["reviewed"] = False
+            st.rerun()
+        language = manifest.get("language", "zh")
+        if translate_col.button("Dịch nghĩa & Pinyin", use_container_width=True, key="translate_lyrics_btn"):
+            with st.spinner("Đang dịch lời bài hát..."):
+                manifest["lyrics"] = step3_provider.auto_translate_and_pinyin(lyrics, language, track)
+            st.rerun()
+
+    with st.expander("Tùy chỉnh kiểu chữ phụ đề", expanded=False):
+        style = manifest.setdefault("style", {})
+        style["font_name"] = st.text_input("Font phụ đề", value=style.get("font_name", "Arial"), key="sub_font_name")
+        style["font_size_original"] = st.slider("Cỡ chữ phụ đề", 20, 56, int(style.get("font_size_original", 32)), key="sub_font_size")
+        style["margin_v"] = st.slider("Cách mép dưới phụ đề", 10, 200, int(style.get("margin_v", 60)), key="sub_margin_v")
+
+def _simple_lyrics_to_segments(raw_text: str, duration: float) -> list[dict]:
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    segment_duration = duration / max(1, len(lines))
+    return [
+        {"start": index * segment_duration, "end": (index + 1) * segment_duration, "text": line,
+         "pinyin": "", "vietnamese": "", "words": []}
+        for index, line in enumerate(lines)
+    ]
+
+def _ensure_effect_off_video() -> Path:
+    """Tạo overlay đen trung tính để renderer giữ nguyên ảnh khi hiệu ứng tắt."""
+    import subprocess
+    path = config.EFFECTS_DIR / "effect_off.mp4"
+    if path.exists() and path.stat().st_size > 1024:
+        return path
+    config.EFFECTS_DIR.mkdir(parents=True, exist_ok=True)
+    subprocess.run([
+        "ffmpeg", "-y", "-f", "lavfi", "-i",
+        "color=c=black:s=1920x1080:r=24:d=2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
+    ], capture_output=True, check=True, timeout=60)
+    return path
+
+
+def _effect_display_name(path: Path) -> str:
+    """Tên hiệu ứng ngắn, dễ đọc trên giao diện."""
+    name = Path(path).stem.lower()
+    labels = {
+        "effect_rain_fall": "Mưa rơi",
+        "effect_snow_fall": "Tuyết rơi",
+        "effect_dust_soft": "Bụi sáng nhẹ",
+        "effect_retro_scanline": "Retro scanline",
+        "effect_light_film_grain": "Film grain",
+        "default_effect": "Mặc định",
+    }
+    if name in labels:
+        return labels[name]
+    return name.replace("effect_", "").replace("pexels_", "").replace("_", " ").title()
+
+
+EFFECT_TYPE_LABELS = {
+    "auto": "Tự động (theo phân tích)",
+    "screen_black": "Nền đen - Screen",
+    "chroma_key": "Phông xanh - Chroma key",
+    "alpha": "Có kênh alpha",
+    "normal": "Video thường - Giữ nguyên",
+}
+BLEND_MODE_LABELS = {
+    "normal": "Bình thường (khuyên dùng)",
+    "screen": "Screen",
+    "lighten": "Lighten",
+    "overlay": "Overlay",
+    "soft-light": "Soft light",
+}
+
+
+def _resolve_pixabay_api_key() -> tuple[str, str]:
+    """Một API key duy nhất: .env/config → st.secrets → ô nhập. Trả về (key, nguồn)."""
+    env_key = ""
+    try:
+        env_file = config.BASE_DIR / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k == "PIXABAY_API_KEY" and v:
+                        env_key = v
+                        os.environ["PIXABAY_API_KEY"] = v
+                        config.PIXABAY_API_KEY = v
+                        break
+    except Exception:
+        pass
+
+    key = env_key or str(getattr(config, "PIXABAY_API_KEY", "") or os.getenv("PIXABAY_API_KEY", "") or "").strip()
+    if key:
+        return key, "env"
+    try:
+        key = str(st.secrets.get("PIXABAY_API_KEY", "") or "").strip()
+    except Exception:
+        key = ""
+    if key:
+        return key, "secrets"
+    return str(st.session_state.get("pixabay_api_key_input") or "").strip(), "input"
+
+
+def _selected_effect_metadata(effect_path) -> dict:
+    try:
+        return step3_provider.get_effect_metadata(effect_path)
+    except Exception:
+        return {}
+
+
+def _resolved_effect_type(metadata: dict) -> str:
+    """effect_type thực tế sau khi giải nghĩa lựa chọn 'Tự động'."""
+    choice = str(st.session_state.get("effect_type_choice", "auto"))
+    if choice != "auto":
+        return choice
+    return str(metadata.get("effect_type") or "screen_black")
+
+
+def _current_effect_settings(metadata: dict | None = None) -> dict:
+    """Bộ thông số compositing thống nhất cho Live Preview, preview FFmpeg và render cuối."""
+    metadata = metadata if metadata is not None else _selected_effect_metadata(st.session_state.get("effect_path") or "")
+    return {
+        "effect_type": _resolved_effect_type(metadata),
+        "blend_mode": str(st.session_state.get("effect_live_blend_mode", "normal")),
+        "opacity": float(st.session_state.get("effect_live_opacity", 0.55)),
+        "speed": float(st.session_state.get("effect_live_speed", 1.0)),
+        "key_color": str(st.session_state.get("effect_key_color", "#00FF00")),
+        "chroma_similarity": float(st.session_state.get("effect_chroma_similarity", 0.18)),
+        "chroma_softness": float(st.session_state.get("effect_chroma_softness", 0.08)),
+        "despill": float(st.session_state.get("effect_despill", 0.35)),
+        "edge_feather": float(st.session_state.get("effect_edge_feather", 1.5)),
+    }
+
+
+def _apply_recommended_composite(metadata: dict) -> None:
+    """Khôi phục thông số từ phân tích local hoặc hồ sơ AI (ưu tiên phân tích)."""
+    recommended = dict((metadata or {}).get("recommended_composite") or {})
+    profile = st.session_state.get("ai_effect_profile") or {}
+    source = recommended or profile
+    if not source:
+        return
+    def _num(key, default):
+        value = source.get(key)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+    st.session_state.effect_live_opacity = _num("opacity", 0.55)
+    st.session_state.effect_live_speed = _num("speed", 1.0)
+    blend = str(source.get("blend_mode") or "normal")
+    st.session_state.effect_live_blend_mode = blend if blend in BLEND_MODE_LABELS else "normal"
+    if metadata.get("effect_type"):
+        st.session_state.effect_type_choice = "auto"
+    if source.get("key_color"):
+        st.session_state.effect_key_color = str(source["key_color"])
+    st.session_state.effect_chroma_similarity = _num("chroma_similarity", 0.18)
+    st.session_state.effect_chroma_softness = _num("chroma_softness", 0.08)
+    st.session_state.effect_despill = _num("despill", 0.35)
+    st.session_state.effect_edge_feather = _num("edge_feather", 1.5)
+
+
+def _auto_analyze_selected_effect(selected_effect: Path) -> dict:
+    """Phân tích loại nền một lần cho mỗi file (kết quả lưu vào manifest)."""
+    metadata = _selected_effect_metadata(selected_effect)
+    if metadata.get("effect_type"):
+        return metadata
+    analyzed_marker = f"analyzed::{selected_effect.name}"
+    if st.session_state.get("effect_analyze_marker") == analyzed_marker:
+        return metadata
+    try:
+        with st.spinner("Đang phân tích loại nền của video hiệu ứng..."):
+            step3_provider.analyze_effect_type(selected_effect)
+        metadata = _selected_effect_metadata(selected_effect)
+        if metadata and metadata.get("effect_type"):
+            _apply_recommended_composite(metadata)
+    except Exception as exc:
+        st.session_state.effect_analyze_error = str(exc)
+    st.session_state.effect_analyze_marker = analyzed_marker
+    return metadata
+
+
+def _render_effect_candidate_card(candidate: dict, key_prefix: str, index: int) -> None:
+    """Card ứng viên: thumbnail, điểm AI, thông số, nguồn/license và nút chọn."""
+    is_local = candidate.get("origin") == "local" or bool(candidate.get("file_name"))
+    with st.container(border=True):
+        thumb = str(candidate.get("thumbnail_url") or "")
+        if thumb:
+            info_col, thumb_col = st.columns([0.62, 0.38])
+            with thumb_col:
+                st.image(thumb, use_container_width=True)
+        else:
+            info_col = st.container()
+        with info_col:
+            if is_local:
+                name = _effect_display_name(Path(str(candidate.get("file_name") or "effect")))
+            else:
+                name = ", ".join(candidate.get("tags", [])[:4]) or f"Video #{candidate.get('id')}"
+            score = candidate.get("ai_score")
+            score_text = f" · AI {score}/100" if score is not None else ""
+            st.markdown(f"**{name}**{score_text}")
+            duration = candidate.get("duration") or candidate.get("duration_seconds")
+            size_mb = float(candidate.get("file_size") or 0) / 1024 / 1024
+            meta_bits = []
+            if duration:
+                meta_bits.append(f"{float(duration):.0f} giây")
+            if candidate.get("height"):
+                meta_bits.append(f"{candidate.get('width') or '?'}×{candidate.get('height')}")
+            if size_mb:
+                meta_bits.append(f"{size_mb:.1f} MB")
+            meta_bits.append("Local" if is_local else "Pixabay")
+            st.caption(" · ".join(meta_bits))
+            st.caption(str(candidate.get("license_name") or "Pixabay Content License"))
+            if candidate.get("ai_reason"):
+                st.caption(candidate["ai_reason"])
+        source_col, pick_col = st.columns([1.0, 1.0])
+        with source_col:
+            page_url = candidate.get("page_url") or candidate.get("source_page_url")
+            if page_url:
+                st.link_button("Xem nguồn", page_url, use_container_width=True)
+        with pick_col:
+            if is_local:
+                if st.button("Chọn", key=f"{key_prefix}_pick_{index}", type="primary", use_container_width=True):
+                    local_path = config.EFFECTS_DIR / str(candidate.get("file_name"))
+                    if local_path.is_file():
+                        _select_effect_path(local_path)
+                        st.rerun()
+                    st.error("File hiệu ứng không còn trên ổ đĩa.")
+            else:
+                if st.button("Tải và chọn", key=f"{key_prefix}_dl_{index}", type="primary", use_container_width=True):
+                    try:
+                        with st.spinner("Đang tải và kiểm tra video..."):
+                            downloaded = step3_provider.download_pixabay_effect(candidate)
+                        _select_effect_path(downloaded)
+                        st.success(f"Đã lưu {downloaded.name}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Tải hiệu ứng thất bại: {exc}")
+
+
+def _render_suggest_tab(pixabay_api_key: str) -> None:
+    """Tab Đề xuất: AI tạo hồ sơ, xếp hạng local trước, thiếu mới tìm Pixabay."""
+    track = st.session_state.get("selected_track") or {}
+    try:
+        music_tags = track.get("style_tags") or step1_music_hunter.classify_music_styles(track)
+    except Exception:
+        music_tags = []
+    if isinstance(music_tags, str):
+        music_tags = [item.strip() for item in music_tags.split(",") if item.strip()]
+    mood_text = ", ".join(music_tags[:4]) if music_tags else "chưa phân loại"
+    st.caption(f"Nhạc: **{track.get('title', 'Chưa chọn')}** · Mood: {mood_text}")
+
+    image_context = " ".join(filter(None, [
+        str(st.session_state.get("image_prompt") or ""),
+        str(st.session_state.get("dreamina_prompt_vi") or ""),
+    ]))
+    if st.button("Phân tích và đề xuất", type="primary", use_container_width=True):
+        with st.spinner("AI đang tạo hồ sơ hiệu ứng..."):
+            profile = step3_provider.build_ai_effect_profile(track, list(music_tags or []), image_context)
+        st.session_state.ai_effect_profile = profile
+        _apply_ai_effect_settings(profile)
+        with st.spinner("Đang xếp hạng thư viện local và tìm bổ sung..."):
+            st.session_state.effect_recommendations = step3_provider.recommend_effects(
+                profile, pixabay_api_key
+            )
+        st.rerun()
+
+    ai_profile = st.session_state.get("ai_effect_profile") or {}
+    if ai_profile:
+        source_label = "AI" if ai_profile.get("source") == "ai" else "Mapping local dự phòng"
+        effect_type_label = EFFECT_TYPE_LABELS.get(str(ai_profile.get("effect_type") or ""), "?")
+        st.caption(f"Nguồn đề xuất: {source_label} · Loại asset: {effect_type_label}")
+        st.write(ai_profile.get("reason") or "Đã tạo hồ sơ hiệu ứng.")
+        st.caption("Query: " + " · ".join(ai_profile.get("queries") or []))
+        if ai_profile.get("error"):
+            st.warning("AI online chưa khả dụng, đang dùng mapping local. " + str(ai_profile["error"]))
+
+    recommendations = st.session_state.get("effect_recommendations") or {}
+    merged = list(recommendations.get("local") or []) + list(recommendations.get("online") or [])
+    if recommendations:
+        note_bits = [f"{len(recommendations.get('local') or [])} local"]
+        if recommendations.get("used_pixabay"):
+            note_bits.append(f"{len(recommendations.get('online') or [])} Pixabay")
+        else:
+            note_bits.append("đủ kết quả local, không gọi Pixabay")
+        if recommendations.get("online_error"):
+            st.warning(f"Pixabay lỗi: {recommendations['online_error']}")
+        st.caption("Ứng viên: " + " · ".join(note_bits) + " · chỉ tải video bạn bấm chọn.")
+    if merged:
+        for index, candidate in enumerate(merged[:3]):
+            _render_effect_candidate_card(candidate, "suggest_top", index)
+        if len(merged) > 3:
+            with st.expander(f"Xem thêm {len(merged) - 3} kết quả"):
+                for index, candidate in enumerate(merged[3:12]):
+                    _render_effect_candidate_card(candidate, "suggest_more", index + 3)
+    elif recommendations:
+        st.info("Chưa có ứng viên phù hợp. Thử tìm thủ công trong tab Thư viện.")
+
+
+def _render_adjust_tab(selected_effect: Path | None, metadata: dict) -> None:
+    """Tab Điều chỉnh: loại hiệu ứng, opacity/tốc độ, chế độ ghép và chroma key."""
+    if not selected_effect:
+        st.info("Chọn hiệu ứng ở tab Đề xuất hoặc Thư viện trước.")
+        return
+
+    detected_type = str(metadata.get("effect_type") or "")
+    confidence = metadata.get("detection_confidence")
+    if detected_type:
+        confidence_text = f" (tin cậy {float(confidence):.0%})" if confidence else ""
+        st.caption(
+            f"Phân tích: **{EFFECT_TYPE_LABELS.get(detected_type, detected_type)}**{confidence_text}"
+            + (f" · nền {metadata.get('detected_background')}" if metadata.get("detected_background") else "")
+        )
+        if metadata.get("detection_warning"):
+            st.warning(metadata["detection_warning"])
+    else:
+        if st.button("Phân tích loại nền video này", use_container_width=True):
+            try:
+                with st.spinner("Đang phân tích khung hình..."):
+                    step3_provider.analyze_effect_type(selected_effect)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Không phân tích được: {exc}")
+
+    type_keys = list(EFFECT_TYPE_LABELS.keys())
+    current_choice = str(st.session_state.get("effect_type_choice", "auto"))
+    if current_choice not in type_keys:
+        current_choice = "auto"
+    choice = st.selectbox(
+        "Loại hiệu ứng",
+        type_keys,
+        index=type_keys.index(current_choice),
+        format_func=lambda value: EFFECT_TYPE_LABELS[value],
+    )
+    st.session_state.effect_type_choice = choice
+    resolved_type = _resolved_effect_type(metadata)
+
+    # Cảnh báo chọn sai chế độ với video phông xanh.
+    if detected_type == "chroma_key" and resolved_type != "chroma_key":
+        st.warning(
+            "Video có dấu hiệu phông xanh. Chế độ hiện tại có thể để lại màu xanh. "
+            "Hãy chuyển sang Phông xanh - Chroma key."
+        )
+
+    st.session_state.effect_live_opacity = st.slider(
+        "Độ mạnh hiệu ứng (opacity)", 0.0, 1.0,
+        float(st.session_state.get("effect_live_opacity", 0.55)), 0.05,
+    )
+    speed_col, blend_col = st.columns(2)
+    with speed_col:
+        current_speed = max(0.5, min(float(st.session_state.get("effect_live_speed", 1.0)), 1.5))
+        st.session_state.effect_live_speed = st.slider("Tốc độ", 0.5, 1.5, current_speed, 0.05)
+    with blend_col:
+        blend_keys = list(BLEND_MODE_LABELS.keys())
+        current_blend = str(st.session_state.get("effect_live_blend_mode", "normal"))
+        if current_blend not in blend_keys:
+            current_blend = "normal"
+        blend_disabled = resolved_type in ("chroma_key", "alpha")
+        blend = st.selectbox(
+            "Chế độ hòa trộn",
+            blend_keys,
+            index=blend_keys.index(current_blend),
+            format_func=lambda value: BLEND_MODE_LABELS[value],
+            disabled=blend_disabled,
+            help="Chroma key và video alpha luôn ghép theo kênh alpha nên không cần blend.",
+        )
+        st.session_state.effect_live_blend_mode = blend
+
+    if resolved_type == "chroma_key":
+        st.markdown("##### Thông số chroma key")
+        st.session_state.effect_key_color = st.color_picker(
+            "Màu phông", value=str(st.session_state.get("effect_key_color", "#00FF00")),
+        )
+        chroma_col_a, chroma_col_b = st.columns(2)
+        with chroma_col_a:
+            st.session_state.effect_chroma_similarity = st.slider(
+                "Similarity", 0.05, 0.50, float(st.session_state.get("effect_chroma_similarity", 0.18)), 0.01,
+                help="Cao hơn xóa nhiều màu hơn nhưng dễ ăn vào chủ thể.",
+            )
+            st.session_state.effect_despill = st.slider(
+                "Despill", 0.0, 1.0, float(st.session_state.get("effect_despill", 0.35)), 0.05,
+                help="Khử viền ám xanh trên mép chủ thể.",
+            )
+        with chroma_col_b:
+            st.session_state.effect_chroma_softness = st.slider(
+                "Softness", 0.0, 0.40, float(st.session_state.get("effect_chroma_softness", 0.08)), 0.01,
+                help="Mép alpha chuyển mềm thay vì cắt cứng.",
+            )
+            st.session_state.effect_edge_feather = st.slider(
+                "Feather viền (px)", 0.0, 5.0, float(st.session_state.get("effect_edge_feather", 1.5)), 0.1,
+                help="Chỉ áp trong FFmpeg preview/render; Live Preview chưa hỗ trợ.",
+            )
+        matte_col, quality_col = st.columns(2)
+        with matte_col:
+            st.session_state.effect_show_matte = st.toggle(
+                "Xem matte", value=bool(st.session_state.get("effect_show_matte", False)),
+                help="Hiện mặt nạ đen trắng để kiểm tra vùng bị xóa.",
+            )
+        with quality_col:
+            quality_label = st.radio(
+                "Chất lượng Live Preview",
+                ["Nhanh 640×360", "Rõ 960×540"],
+                index=1 if st.session_state.get("effect_preview_quality") == "sharp" else 0,
+                horizontal=True,
+            )
+            st.session_state.effect_preview_quality = "sharp" if "960" in quality_label else "fast"
+
+    if st.button("Khôi phục thông số đề xuất", use_container_width=True):
+        _apply_recommended_composite(metadata)
+        st.rerun()
+
+
+def _render_library_tab(effects: list[Path], selected_effect: Path | None, pixabay_api_key: str, key_source: str, manifest_summary: dict | None, image_value) -> None:
+    """Tab Thư viện: chọn local, tìm Pixabay thủ công, quản trị manifest, phân tích cảnh."""
+    if effects:
+        current_name = Path(st.session_state.effect_path).name if st.session_state.get("effect_path") else effects[0].name
+        current_index = next((i for i, item in enumerate(effects) if item.name == current_name), 0)
+        selected_name = st.selectbox(
+            "Hiệu ứng trong thư viện",
+            options=[item.name for item in effects],
+            index=current_index,
+            format_func=lambda value: _effect_display_name(Path(value)),
+        )
+        chosen = next(item for item in effects if item.name == selected_name)
+        if st.session_state.get("effect_path") != str(chosen.resolve()):
+            _select_effect_path(chosen)
+            st.rerun()
+    else:
+        st.warning("Chưa có hiệu ứng trong thư viện.")
+    if st.button("Tạo bộ hiệu ứng mẫu (mưa, tuyết, bụi...)", use_container_width=True):
+        with st.spinner("Đang tạo hiệu ứng mẫu..."):
+            step3_provider.create_builtin_effect_pack()
+        st.rerun()
+
+    st.markdown("##### Tìm thủ công trên Pixabay")
+    if key_source == "input":
+        st.text_input(
+            "Pixabay API key", type="password", key="pixabay_api_key_input",
+            help="Lấy key miễn phí tại pixabay.com/api/docs. Ưu tiên đặt PIXABAY_API_KEY trong .env; key không được lưu vào app state hay manifest.",
+        )
+        pixabay_api_key = str(st.session_state.get("pixabay_api_key_input") or "").strip()
+    else:
+        st.caption("Pixabay API: **Đã kết nối** (" + (".env" if key_source == "env" else "st.secrets") + ")")
+
+    track = st.session_state.get("selected_track") or {}
+    default_effect_query = suggest_effect_query_from_track(track)
+    search_query = st.text_input(
+        "Từ khóa hiệu ứng", value=default_effect_query, key="pixabay_effect_query",
+        help="Nói rõ loại asset: rain green screen, smoke black background overlay...",
+    )
+    if st.button("Tìm hiệu ứng Pixabay", use_container_width=True):
+        try:
+            with st.spinner("Đang tìm metadata Pixabay..."):
+                st.session_state.manual_pixabay_results = _search_pixabay_effects_cached(
+                    search_query.strip(), pixabay_api_key
+                )
+            if not st.session_state.manual_pixabay_results:
+                st.info("Pixabay không trả về kết quả phù hợp.")
+        except Exception as exc:
+            st.session_state.manual_pixabay_results = []
+            st.error(f"Không tìm được hiệu ứng: {exc}")
+    manual_results = st.session_state.get("manual_pixabay_results") or []
+    for result_index, candidate in enumerate(manual_results[:6]):
+        _render_effect_candidate_card(candidate, "manual", result_index)
+
+    with st.expander("Quản lý manifest (nâng cao)", expanded=False):
+        if manifest_summary:
+            st.caption(
+                f"Manifest: {manifest_summary['ready']} sẵn sàng · "
+                f"{manifest_summary['missing']} thất lạc · "
+                f"{manifest_summary['duplicate_hashes']} trùng nội dung"
+            )
+        records = step3_provider.list_effect_records(include_missing=True)
+        for record in records:
+            record_status = "Sẵn sàng" if record.get("status") == "ready" else "Thiếu file"
+            provider = str(record.get("provider") or "local").title()
+            license_name = str(record.get("license_name") or "Chưa xác định")
+            type_label = EFFECT_TYPE_LABELS.get(str(record.get("effect_type") or ""), "chưa phân tích")
+            st.caption(f"{record.get('file_name')} · {provider} · {record_status} · {type_label} · {license_name}")
+        manifest_action_col, cleanup_action_col = st.columns(2)
+        with manifest_action_col:
+            if st.button("Quét lại manifest", use_container_width=True):
+                try:
+                    step3_provider.sync_effect_manifest(calculate_hashes=True)
+                    st.success("Đã đồng bộ lại manifest.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Không đồng bộ được manifest: {exc}")
+        with cleanup_action_col:
+            if st.button("Dọn mục thất lạc", use_container_width=True):
+                removed = step3_provider.remove_missing_manifest_entries()
+                st.success(f"Đã dọn {removed} mục metadata thất lạc.")
+                st.rerun()
+        if st.button("Phân tích loại nền toàn thư viện", use_container_width=True):
+            analyzed = 0
+            with st.spinner("Đang phân tích các video hiệu ứng..."):
+                for record in step3_provider.list_effect_records():
+                    file_path = config.EFFECTS_DIR / str(record.get("file_name"))
+                    if record.get("effect_type") or not file_path.is_file():
+                        continue
+                    try:
+                        step3_provider.analyze_effect_type(file_path)
+                        analyzed += 1
+                    except Exception:
+                        continue
+            st.success(f"Đã phân tích {analyzed} video.")
+            st.rerun()
+
+    with st.expander("AI phân tích cảnh (nâng cao)", expanded=False):
+        scene_manifest = st.session_state.get("scene_layers_manifest")
+        scene_image_key = str(Path(image_value).resolve())
+        scene_ready = bool(
+            scene_manifest
+            and st.session_state.get("scene_layers_image") == scene_image_key
+            and _path_exists((scene_manifest or {}).get("mask_preview_path"))
+        )
+        force_analysis = st.checkbox("Phân tích lại từ đầu", value=False)
+        if st.button("Phân tích ảnh", use_container_width=True):
+            try:
+                from core.image.scene_layer_processor import SceneLayerProcessor
+                environment = SceneLayerProcessor.inspect_environment()
+                missing = [name for name in ("torch", "transformers") if not environment.get(name)]
+                if missing:
+                    raise RuntimeError("Thiếu thư viện AI: " + ", ".join(missing))
+                with st.spinner("Đang phân tích các lớp cảnh..."):
+                    manifest = SceneLayerProcessor.analyze_scene(
+                        Path(image_value),
+                        st.session_state.get("project_id", "lofi_default_prj"),
+                        force_recreate=force_analysis,
+                        model_id=getattr(config, "SCENE_SEGMENTATION_MODEL", None),
+                        min_component_ratio=float(getattr(config, "SCENE_MASK_MIN_COMPONENT_RATIO", 0.00035)),
+                        feather_radius=int(getattr(config, "SCENE_MASK_FEATHER_RADIUS", 2)),
+                    )
+                st.session_state.scene_layers_manifest = manifest
+                st.session_state.scene_layers_image = scene_image_key
+                st.session_state.scene_analysis_error = None
+                save_persisted_app_state()
+                st.rerun()
+            except Exception as exc:
+                st.session_state.scene_analysis_error = str(exc)
+                st.error(f"Phân tích thất bại: {exc}")
+        if scene_ready:
+            coverage = scene_manifest.get("coverage") or {}
+            st.image(str(scene_manifest["mask_preview_path"]), use_container_width=True)
+            st.caption(
+                f"Lá gần {float(coverage.get('leaves_near', 0))*100:.1f}% · "
+                f"Lá giữa {float(coverage.get('leaves_mid', 0))*100:.1f}% · "
+                f"Kiến trúc {float(coverage.get('architecture', 0))*100:.1f}% · "
+                f"Bầu trời {float(coverage.get('sky', 0))*100:.1f}%"
+            )
+        elif st.session_state.get("scene_analysis_error"):
+            st.warning(st.session_state.scene_analysis_error)
+
+
+_LOCAL_MUSIC_SOURCES = {
+    "Pixabay Music": {
+        "license": "Pixabay Content License — miễn phí thương mại, không cần credit",
+        "home": "https://pixabay.com/music/",
+    },
+    "StockTune": {
+        "license": "StockTune Free License — miễn phí thương mại, không cần credit",
+        "home": "https://stocktune.com/",
+    },
+    "Chosic": {
+        "license": "Creative Commons (kiểm tra license từng bài trên trang Chosic)",
+        "home": "https://www.chosic.com/free-music/lofi/",
+    },
+    "Free Music Archive": {
+        "license": "CC BY — cần ghi credit tác giả (kiểm tra trang bài hát)",
+        "home": "https://freemusicarchive.org/",
+    },
+    "Khác": {"license": "", "home": ""},
+}
+
+
+def _render_local_music_import():
+    """Panel nhập nhạc từ file trên máy (Pixabay/Chosic/StockTune...) vào pipeline Bước 2."""
+    local_tracks = step1_music_hunter.list_local_imports()
+    label = f"📂 Nhập nhạc từ file trên máy · {len(local_tracks)} bài đã nhập"
+    with st.expander(label, expanded=False):
+        st.caption(
+            "Nguồn miễn phí đề xuất (tải MP3 về rồi nhập vào đây): "
+            "[Pixabay Music](https://pixabay.com/music/) · "
+            "[StockTune](https://stocktune.com/) · "
+            "[Chosic](https://www.chosic.com/free-music/lofi/) · "
+            "[Free Music Archive](https://freemusicarchive.org/) — "
+            "nhớ copy link bài gốc để ghi credit vào description YouTube."
+        )
+        uploaded = st.file_uploader(
+            "File nhạc (MP3/WAV/M4A/FLAC/OGG)",
+            type=["mp3", "wav", "m4a", "flac", "ogg", "aac", "opus"],
+            key="local_music_file",
+        )
+        info_cols = st.columns([1.4, 1.0])
+        default_title = Path(uploaded.name).stem if uploaded else ""
+        title = info_cols[0].text_input("Tên bài", value=default_title, key="local_music_title")
+        author = info_cols[1].text_input("Tác giả / Nghệ sĩ", key="local_music_author")
+        src_cols = st.columns([1.0, 2.0])
+        src_choice = src_cols[0].selectbox("Nguồn", list(_LOCAL_MUSIC_SOURCES.keys()), key="local_music_source")
+        license_text = src_cols[1].text_input(
+            "Giấy phép", value=_LOCAL_MUSIC_SOURCES[src_choice]["license"],
+            key=f"local_music_license_{src_choice}",
+            help="Ghi rõ license để app tự sinh credit khi upload YouTube.",
+        )
+        original_url = st.text_input(
+            "Link bài gốc (khuyến nghị — làm bằng chứng license)",
+            key="local_music_url", placeholder="https://pixabay.com/music/...",
+        )
+
+        if st.button("📥 Nhập & chọn bài này", type="primary",
+                     use_container_width=True, disabled=uploaded is None,
+                     key="local_music_import_btn"):
+            try:
+                temp_dir = config.CACHE_DIR / "local_import_tmp"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                temp_path = temp_dir / uploaded.name
+                temp_path.write_bytes(uploaded.getbuffer())
+                with st.spinner("Đang chuẩn hóa và kiểm duyệt file nhạc..."):
+                    track = step1_music_hunter.import_local_track(
+                        temp_path,
+                        title=title,
+                        author=author,
+                        source_label=src_choice,
+                        license_text=license_text,
+                        original_url=original_url,
+                        project_id=st.session_state.get("project_id"),
+                    )
+                temp_path.unlink(missing_ok=True)
+                st.success(f"Đã nhập '{track['title']}' ({track['duration_seconds']:.0f}s).")
+                _select_track(track)
+            except Exception as exc:
+                st.error(f"Không nhập được file: {exc}")
+
+        if local_tracks:
+            st.markdown("**Bài đã nhập trước đó:**")
+            for item in local_tracks:
+                row = st.columns([2.6, 1.0, 0.8], vertical_alignment="center")
+                minutes = item["duration_seconds"] / 60 if item["duration_seconds"] else 0
+                row[0].markdown(
+                    f"**{item['title']}** — {item['author']}  \n"
+                    f"<span style='font-size:.78rem;color:#94a3b8;'>{item['source']} · {minutes:.1f} phút · {item['license'][:60]}</span>",
+                    unsafe_allow_html=True,
+                )
+                audio_path = config.INPUT_AUDIO_DIR / f"{item['track_id']}.m4a"
+                if row[1].button("▶️ Nghe", key=f"local_play_{item['track_id']}", use_container_width=True):
+                    st.session_state["local_music_playing"] = (
+                        None if st.session_state.get("local_music_playing") == item["track_id"] else item["track_id"]
+                    )
+                if row[2].button("Chọn →", key=f"local_pick_{item['track_id']}", use_container_width=True):
+                    _select_track(item)
+                if st.session_state.get("local_music_playing") == item["track_id"] and audio_path.is_file():
+                    st.audio(str(audio_path))
 
 
 def render_music_wizard_step():
     """Màn chọn nhạc đơn giản: chọn nhóm, phong cách, quét rồi chọn bài."""
-    st.markdown("BƯỚC 02", unsafe_allow_html=True)
     st.markdown("## Chọn nhạc")
     st.caption("Chọn loại nhạc và thời gian. Hệ thống quét rộng một lần, sau đó lọc phong cách ở kết quả.")
     st.markdown(
@@ -1146,6 +2274,8 @@ def render_music_wizard_step():
     st.caption(
         f"YouTube: {youtube_status}   ·   Last.fm: {lastfm_label}{matched_text}   ·   Quota: {usage['remaining']}/{usage['limit']}"
     )
+
+    _render_local_music_import()
 
     category_options = ["🇻🇳 Nhạc Việt", "🇨🇳 Nhạc Trung", "🎧 Lofi thư giãn"]
     scan_buckets = st.session_state.setdefault("music_scan_buckets", {})
@@ -1199,7 +2329,6 @@ def render_music_wizard_step():
         }[license_label]
         market_data = getattr(config, "YOUTUBE_MARKETS", {})
         fallback_names = {"VN": "Việt Nam", "HK": "Hong Kong", "TW": "Đài Loan", "CN": "Trung Quốc"}
-        # Thị trường được tự chọn theo loại nhạc. Không dùng multiselect để tránh state rỗng khóa nút Quét.
         selected_markets = [code for code in current["markets"] if code in {"VN", "HK", "TW", "CN"}]
         advanced_cols[2].text_input(
             "Thị trường tự động",
@@ -1355,203 +2484,6 @@ def render_music_wizard_step():
             st.session_state.compact_trend_display_limit = display_limit + 10
             st.rerun()
 
-
-def _short_error_message(error, provider_name: str = "") -> str:
-    """Rút gọn lỗi kỹ thuật để UI dễ đọc."""
-    text = str(error or "")
-    provider_name = provider_name or ""
-
-    if "HuggingFaceProvider" in text or "has no attribute" in text:
-        return "File step2_image_provider.py chưa cập nhật. Hãy chép file mới hoặc chọn nguồn ảnh khác."
-    if "AIHordeProvider" in text:
-        return "File step2_image_provider.py chưa cập nhật AI Horde. Hãy chép file mới hoặc chọn nguồn khác."
-    if "429" in text or "Too Many Requests" in text:
-        return "Nguồn tạo ảnh đang giới hạn lượt. Đợi vài phút hoặc đổi nguồn khác."
-    if "530" in text:
-        return "Máy chủ tạo ảnh đang lỗi tạm thời. Hãy đổi nguồn khác hoặc thử lại sau."
-    if "503" in text:
-        return "Model đang tải hoặc máy chủ đang bận. Hãy thử lại sau."
-    if "401" in text or "Unauthorized" in text:
-        return "API key/token không đúng hoặc đã hết quyền dùng."
-    if "402" in text or "Insufficient" in text:
-        return "Tài khoản/API đã hết credit. Hãy đổi nguồn khác."
-    if "Connection" in text or "Failed to establish" in text or "Max retries" in text:
-        return "Chưa kết nối được nguồn tạo ảnh. Kiểm tra mạng hoặc nguồn đang chạy chưa."
-    if "timeout" in text.lower() or "timed out" in text.lower():
-        return "Nguồn tạo ảnh phản hồi quá lâu. Hãy thử lại hoặc đổi nguồn khác."
-    if "Chưa nhập Hugging Face token" in text:
-        return "Bạn chưa nhập Hugging Face token."
-
-    clean = text.replace("\n", " ").strip()
-    if len(clean) > 180:
-        clean = clean[:180].rstrip() + "..."
-    return f"Lỗi sinh ảnh: {clean}" if clean else "Lỗi sinh ảnh không rõ."
-
-
-def _scale_and_register_image(raw_path: Path, provider_name: str, prompt_text: str) -> Path:
-    from step2_image_provider import scale_image_ffmpeg, validate_image_file
-    from core.runtime.db import get_db_connection
-    from core.runtime.schemas import validate_data_schema
-    from core.runtime.project_manager import ProjectManager
-    from core.runtime.cache_manager import CacheManager
-    import json
-    from datetime import datetime, timezone
-    
-    full_hd_path = config.TEMP_IMAGE_DIR / f"bg_full_hd_{random.randint(1000, 9999)}.png"
-    scale_image_ffmpeg(raw_path, full_hd_path, 1920, 1080)
-    validate_image_file(full_hd_path)
-    
-    try:
-        raw_path.unlink(missing_ok=True)
-    except Exception:
-        pass
-        
-    file_sha256 = CacheManager.get_file_sha256(full_hd_path)
-    file_size = full_hd_path.stat().st_size
-    
-    image_meta = {
-        "schema_name": "image_metadata",
-        "schema_version": 1,
-        "provider": provider_name,
-        "model": st.session_state.get("sd_checkpoint", "unknown_model"),
-        "prompt": prompt_text,
-        "negative_prompt": getattr(config, "IMAGE_NEGATIVE_PROMPT", ""),
-        "seed": random.randint(100000, 999999),
-        "source_size": "960x540",
-        "final_size": "1920x1080",
-        "upscale_method": "lanczos",
-        "source_path": f"data/temp_image/{full_hd_path.name}",
-        "full_hd_path": f"data/temp_image/{full_hd_path.name}"
-    }
-    
-    validate_data_schema(image_meta, "image_metadata")
-    
-    meta_path = config.METADATA_DIR / f"image_{file_sha256[:12]}.json"
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(image_meta, f, ensure_ascii=False, indent=2)
-
-    p_id = st.session_state.get("project_id", "lofi_default_prj")
-    conn = get_db_connection()
-    try:
-        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        asset_id = f"image_{file_sha256[:12]}"
-        with conn:
-            conn.execute("""
-            INSERT OR REPLACE INTO assets (asset_id, project_id, path, sha256, mime_type, size_bytes, processing_status, review_status, created_at_utc)
-            VALUES (?, ?, ?, ?, 'image/png', ?, 'verified', 'approved', ?);
-            """, (asset_id, p_id, f"data/temp_image/{full_hd_path.name}", file_sha256, file_size, now_str))
-            
-        ProjectManager.update_workflow_status(
-            project_id=p_id,
-            module_name="image",
-            processing_status="verified",
-            review_status="approved",
-            input_hash=file_sha256,
-            output_hash=file_sha256,
-            reason=f"Image generated via {provider_name} and scaled to Full HD 1920x1080.",
-            actor="review_app"
-        )
-    finally:
-        conn.close()
-        
-    return full_hd_path
-
-def _generate_image_with_fallback(prompt_text: str, provider_name: str):
-    """Tạo ảnh nền, tự fallback sang SD Local nếu Pollinations bị giới hạn."""
-    config.POLLINATIONS_API_KEY = st.session_state.pollinations_key
-    config.SD_LOCAL_API_URL = st.session_state.sd_api_url
-    config.SD_LOCAL_CHECKPOINT = st.session_state.sd_checkpoint
-    config.TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = config.TEMP_IMAGE_DIR / f"bg_{random.randint(1000, 9999)}.png"
-
-    try:
-        if "Pollinations" in provider_name:
-            provider = step2_image_provider.PollinationsProvider()
-        elif "AI Horde" in provider_name or "Stable Horde" in provider_name:
-            if not hasattr(step2_image_provider, "AIHordeProvider"):
-                return None, "File step2_image_provider.py chưa cập nhật AI Horde. Hãy chép file mới hoặc chọn nguồn khác."
-            provider = step2_image_provider.AIHordeProvider(st.session_state.get("ai_horde_key", "0000000000"))
-        elif "Hugging Face" in provider_name:
-            if not hasattr(step2_image_provider, "HuggingFaceProvider"):
-                return None, "File step2_image_provider.py chưa cập nhật Hugging Face. Hãy chép file mới hoặc chọn nguồn khác."
-            provider = step2_image_provider.HuggingFaceProvider(
-                token=st.session_state.get("hf_token", ""),
-                model_id=st.session_state.get("hf_model_id", "stabilityai/stable-diffusion-xl-base-1.0"),
-            )
-        elif "Cloudflare" in provider_name:
-            config.CLOUDFLARE_ACCOUNT_ID = st.session_state.get("cf_account_id", "") or config.CLOUDFLARE_ACCOUNT_ID
-            config.CLOUDFLARE_API_TOKEN = st.session_state.get("cf_api_token", "") or config.CLOUDFLARE_API_TOKEN
-            provider = step2_image_provider.CloudflareWorkersAIProvider()
-        else:
-            provider = step2_image_provider.SDLocalProvider()
-        
-        raw_img = provider.generate(prompt_text, out_path)
-        final_img = _scale_and_register_image(raw_img, provider_name, prompt_text)
-        return final_img, None
-    except Exception as e:
-        error_text = str(e)
-        is_rate_limit = "Pollinations" in provider_name and ("429" in error_text or "Too Many Requests" in error_text)
-        if is_rate_limit:
-            try:
-                fallback_path = config.TEMP_IMAGE_DIR / f"bg_sd_{random.randint(1000, 9999)}.png"
-                fallback_provider = step2_image_provider.SDLocalProvider()
-                raw_fallback = fallback_provider.generate(prompt_text, fallback_path)
-                final_fallback = _scale_and_register_image(raw_fallback, "SD Local (Fallback)", prompt_text)
-                return final_fallback, "Pollinations đang giới hạn lượt tạo ảnh, đã chuyển sang SD Local."
-            except Exception as sd_error:
-                return None, (
-                    "Pollinations đang giới hạn lượt tạo ảnh. SD Local cũng chưa chạy được. "
-                    "Hãy mở Stable Diffusion WebUI/ComfyUI local hoặc đợi vài phút rồi thử lại.\n"
-                    f"Chi tiết SD Local: {sd_error}"
-                )
-        return None, _short_error_message(e, provider_name)
-
-
-def _prepare_uploaded_background(input_path: Path, output_path: Path, zoom_percent: int = 2) -> Path:
-    """Cắt giữa 16:9, phóng mép và xuất Full HD, không phụ thuộc module step2."""
-    import subprocess
-
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-    if not input_path.exists():
-        raise FileNotFoundError(f"Không tìm thấy ảnh upload: {input_path}")
-
-    zoom_percent = max(0, min(int(zoom_percent), 20))
-    keep_ratio = max(0.80, 1.0 - zoom_percent / 100.0)
-    target_ratio = 16 / 9
-    crop_filter = (
-        f"crop='if(gt(iw/ih,{target_ratio}),ih*{target_ratio},iw)*{keep_ratio}':"
-        f"'if(gt(iw/ih,{target_ratio}),ih,iw/{target_ratio})*{keep_ratio}':"
-        "(iw-ow)/2:(ih-oh)/2,scale=1920:1080:flags=lanczos,setsar=1"
-    )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg", "-y", "-i", str(input_path),
-        "-vf", crop_filter, "-frames:v", "1", str(output_path),
-    ]
-    try:
-        subprocess.run(
-            cmd, capture_output=True, text=True, check=True,
-            encoding="utf-8", errors="ignore", timeout=90,
-        )
-    except FileNotFoundError as exc:
-        raise RuntimeError("Không tìm thấy FFmpeg trong PATH.") from exc
-    except subprocess.CalledProcessError as exc:
-        lines = (exc.stderr or exc.stdout or "FFmpeg không trả chi tiết").strip().splitlines()
-        detail = lines[-1] if lines else "Không rõ lỗi"
-        raise RuntimeError(f"FFmpeg xử lý ảnh lỗi: {detail}") from exc
-
-    if not output_path.exists() or output_path.stat().st_size < 1024:
-        raise RuntimeError("Ảnh Full HD không được tạo hoặc file quá nhỏ.")
-    return output_path
-
-
-def render_copy_prompt_button(prompt_text: str) -> None:
-    """Hiển thị prompt bằng st.code để dùng nút sao chép native của Streamlit."""
-    with st.popover("Sao chép prompt", use_container_width=True):
-        st.caption("Bấm biểu tượng sao chép ở góc phải khung prompt.")
-        st.code(prompt_text or "", language=None, wrap_lines=True)
-
 def render_image_wizard_step():
     """Màn hình ảnh nền gọn, ưu tiên Dreamina và hạn chế cuộn trang."""
     st.markdown("## Ảnh nền")
@@ -1610,43 +2542,7 @@ def render_image_wizard_step():
             st.session_state.dreamina_prompt = edited_prompt
             st.session_state.image_prompt = edited_prompt
 
-            with st.expander("Cài đặt Gemini", expanded=False):
-                prompt_provider = st.selectbox(
-                    "Nhà cung cấp",
-                    ["Gemini", "API tương thích OpenAI"],
-                    key="prompt_provider_choice",
-                )
-                st.session_state.prompt_api_key = st.text_input(
-                    "API key",
-                    value=st.session_state.get("prompt_api_key", ""),
-                    type="password",
-                    placeholder="Dán API key tại đây",
-                )
-                if prompt_provider == "Gemini":
-                    model_options = ["gemini-2.5-flash", "gemini-2.5-pro"]
-                    current_model = st.session_state.get("prompt_api_model", model_options[0])
-                    model_index = model_options.index(current_model) if current_model in model_options else 0
-                    st.session_state.prompt_api_model = st.selectbox(
-                        "Model",
-                        model_options,
-                        index=model_index,
-                    )
-                    st.session_state.prompt_api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-                else:
-                    st.session_state.prompt_api_url = st.text_input(
-                        "API URL",
-                        value=st.session_state.get("prompt_api_url", ""),
-                    )
-                    st.session_state.prompt_api_model = st.text_input(
-                        "Model",
-                        value=st.session_state.get("prompt_api_model", ""),
-                    )
-                st.caption(
-                    "Đã kết nối Gemini" if st.session_state.prompt_api_key
-                    else "Chưa có key · hệ thống vẫn dùng fallback anime"
-                )
-                # Tự lưu, không cần thêm nút Lưu cấu hình.
-                save_prompt_settings()
+            st.caption("⚙️ Cài đặt API key & model Gemini nay ở **sidebar → 🔑 Cài đặt AI (Gemini)**.")
 
             with st.expander("Mô tả tiếng Việt", expanded=False):
                 current_variant = int(st.session_state.get("dreamina_prompt_variant_" + str(track.get("track_id")), 0))
@@ -1769,7 +2665,7 @@ def render_image_wizard_step():
                     st.rerun()
             with next_col:
                 if st.button("Dùng ảnh này →", type="primary", use_container_width=True):
-                    _go_to_step(4)
+                    _go_to_step(5)  # -> Hiệu ứng & Chữ
         else:
             st.markdown(
                 "<div style='min-height:320px;border:1px dashed #343a55;border-radius:12px;"
@@ -1779,1208 +2675,29 @@ def render_image_wizard_step():
             )
             st.caption("Tải ảnh Dreamina hoặc tạo ảnh AI ở cột bên trái.")
 
-def render_subtitle_wizard_step_simple():
-    """Màn phụ đề tối giản: online trước, AI chỉ là lựa chọn dự phòng."""
-    from core.media.probe import MediaProbe
-
-    st.markdown("## Phụ đề Karaoke")
-    track = st.session_state.get("selected_track")
-    if not track:
-        st.error("Hãy chọn bài nhạc trước khi tạo phụ đề.")
-        if st.button("← Quay lại chọn nhạc"):
-            _go_to_step(2)
-        return
-
-    project_id = st.session_state.get("project_id", "lofi_default_prj")
-    track_id = str(track.get("track_id") or "")
-    audio_file = config.INPUT_AUDIO_DIR / f"{track_id}.m4a"
-    if "subtitle_manifest_data" not in st.session_state or st.session_state.get("subtitle_project_id") != project_id:
-        st.session_state["subtitle_manifest_data"] = step3_subtitle_provider.load_project_subtitles(project_id)
-        st.session_state["subtitle_project_id"] = project_id
-    manifest = st.session_state["subtitle_manifest_data"]
-    manifest["enabled"] = st.checkbox("Hiển thị phụ đề trong video", value=manifest.get("enabled", True))
-
-    duration = 180.0
-    try:
-        duration = float(MediaProbe.probe_media(audio_file).get("duration_seconds") or duration)
-    except Exception:
-        pass
-
-    st.caption(f"{track.get('title', 'Chưa rõ tên bài')} · {track.get('author', 'Chưa rõ ca sĩ')}")
-    search_col, info_col = st.columns([1, 1.4], gap="medium")
-    if search_col.button("🔎 Tìm lời bài hát online", type="primary", use_container_width=True):
-        with st.spinner("Đang tìm lời bài hát đã xuất bản..."):
-            result = step3_subtitle_provider.search_online_lyrics(
-                str(track.get("title") or ""), str(track.get("author") or ""), duration
-            )
-        if result.get("found"):
-            st.session_state["online_lyrics_candidates"] = result["candidates"]
-            st.rerun()
-        st.warning(result.get("reason", "Không tìm thấy lời online."))
-    candidates = st.session_state.get("online_lyrics_candidates") or []
-    if candidates:
-        choice = st.selectbox(
-            "Chọn đúng phiên bản lời bài hát",
-            options=list(range(len(candidates))),
-            format_func=lambda index: (
-                f"{candidates[index]['track_name']} — {candidates[index]['artist_name']}"
-                f" · {candidates[index]['album_name'] or 'Không rõ album'}"
-                f" · {'Có timestamp' if candidates[index]['timing'] == 'synced' else 'Lời thường'}"
-            ),
-            key="online_lyrics_choice",
-        )
-        if st.button("Dùng phiên bản này", type="primary", use_container_width=True):
-            selected = candidates[choice]
-            manifest["lyrics"] = selected["segments"]
-            manifest["lyrics_source"] = selected["source"]
-            manifest["lyrics_timing"] = selected["timing"]
-            manifest["reviewed"] = False
-            st.session_state.pop("online_lyrics_candidates", None)
-            st.rerun()
-    if manifest.get("lyrics"):
-        source = manifest.get("lyrics_source") or "Nhập thủ công"
-        timing = "đã có mốc thời gian" if manifest.get("lyrics_timing") == "synced" else "mốc thời gian ước lượng"
-        info_col.success(f"Đã có {len(manifest['lyrics'])} dòng · {source} · {timing}")
-    else:
-        info_col.info("Chưa có lời. Hãy tìm online trước.")
-
-    with st.expander("Không tìm thấy lời online? Dùng AI hoặc dán lời", expanded=not bool(manifest.get("lyrics"))):
-        whisper_ready = step3_subtitle_provider.transcriber.is_whisper_installed()
-        fallback_col, paste_col = st.columns(2, gap="large")
-        with fallback_col:
-            model = st.selectbox("Model Whisper", ["tiny", "base", "small"], index=1)
-            if st.button("Tạo lời bằng AI", use_container_width=True, disabled=not whisper_ready):
-                try:
-                    with st.spinner("AI đang nhận dạng lời hát..."):
-                        manifest["lyrics"] = step3_subtitle_provider.run_transcription(audio_file, model_name=model)
-                    manifest["lyrics_source"] = "Whisper (AI)"
-                    manifest["lyrics_timing"] = "synced"
-                    manifest["reviewed"] = False
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Không thể nhận dạng lời: {exc}")
-            if not whisper_ready:
-                st.caption("Cần cài openai-whisper để dùng lựa chọn này.")
-        with paste_col:
-            pasted = st.text_area("Hoặc dán lời (mỗi dòng một câu)", height=135, key="simple_pasted_lyrics")
-            if st.button("Dùng lời đã dán", use_container_width=True):
-                manifest["lyrics"] = _simple_lyrics_to_segments(pasted, duration)
-                manifest["lyrics_source"] = "Nhập thủ công"
-                manifest["lyrics_timing"] = "estimated"
-                manifest["reviewed"] = False
-                st.rerun()
-
-    lyrics = manifest.get("lyrics") or []
-    if lyrics:
-        current_text = "\n".join(str(item.get("text") or "") for item in lyrics)
-        edited_text = st.text_area("Lời bài hát", value=current_text, height=280, help="Mỗi dòng tương ứng một câu phụ đề.")
-        edit_col, translate_col = st.columns(2)
-        if edit_col.button("Áp dụng nội dung đã sửa", use_container_width=True):
-            manifest["lyrics"] = _simple_lyrics_to_segments(edited_text, duration)
-            manifest["lyrics_timing"] = "estimated"
-            manifest["reviewed"] = False
-            st.rerun()
-        language = manifest.get("language", "zh")
-        if translate_col.button("Dịch nghĩa & Pinyin", use_container_width=True):
-            with st.spinner("Đang dịch lời bài hát..."):
-                manifest["lyrics"] = step3_subtitle_provider.auto_translate_and_pinyin(lyrics, language, track)
-            st.rerun()
-
-    with st.expander("Tùy chỉnh kiểu chữ", expanded=False):
-        style = manifest.setdefault("style", {})
-        style["font_name"] = st.text_input("Font", value=style.get("font_name", "Arial"))
-        style["font_size_original"] = st.slider("Cỡ chữ", 20, 56, int(style.get("font_size_original", 32)))
-        style["margin_v"] = st.slider("Cách mép dưới", 10, 200, int(style.get("margin_v", 60)))
-
-    image_path = st.session_state.get("image_path")
-    effect_path = st.session_state.get("effect_path")
-    if lyrics and image_path and effect_path and Path(image_path).is_file() and Path(effect_path).is_file():
-        st.markdown("#### Live Preview")
-        try:
-            effect_live_preview(
-                image_path,
-                effect_path,
-                motion_mode=st.session_state.get("motion_mode", "smooth_zoom"),
-                quality="fast",
-                text_profile=st.session_state.get("text_profile"),
-                height=380,
-            )
-        except Exception as exc:
-            st.warning(f"Live Preview phụ đề không khả dụng: {exc}")
-        if st.button("▶ Tạo preview phụ đề 10 giây", use_container_width=True):
-            try:
-                manifest["reviewed"] = True
-                step3_subtitle_provider.save_project_subtitles(project_id, manifest)
-                step3_subtitle_provider.generate_subtitles_file(project_id, manifest["lyrics"], manifest["style"])
-                preview_path = config.TEMP_IMAGE_DIR / f"subtitle_preview_{project_id}.mp4"
-                with st.spinner("Đang ghép hiệu ứng và phụ đề để xem trước..."):
-                    step4_render.build_effect_preview(
-                        Path(image_path), Path(effect_path), preview_path, duration=10,
-                        motion_mode=st.session_state.get("motion_mode", "smooth_zoom"),
-                        text_profile=st.session_state.get("text_profile"), project_id=project_id,
-                    )
-                st.session_state["subtitle_preview_path"] = str(preview_path)
-            except Exception as exc:
-                st.error(f"Không tạo được preview: {exc}")
-        preview_path = st.session_state.get("subtitle_preview_path")
-        if preview_path and Path(preview_path).is_file():
-            st.caption("Preview FFmpeg 10 giây")
-            st.video(preview_path)
-    save_col, back_col = st.columns(2)
-    if save_col.button("Lưu phụ đề & tiếp tục →", type="primary", use_container_width=True, disabled=not bool(lyrics)):
-        manifest["reviewed"] = True
-        step3_subtitle_provider.save_project_subtitles(project_id, manifest)
-        step3_subtitle_provider.generate_subtitles_file(project_id, manifest["lyrics"], manifest["style"])
-        _go_to_step(6)
-    if back_col.button("← Quay lại ảnh nền", use_container_width=True):
-        _go_to_step(4)
-
-def _simple_lyrics_to_segments(raw_text: str, duration: float) -> list[dict]:
-    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
-    segment_duration = duration / max(1, len(lines))
-    return [
-        {"start": index * segment_duration, "end": (index + 1) * segment_duration, "text": line,
-         "pinyin": "", "vietnamese": "", "words": []}
-        for index, line in enumerate(lines)
-    ]
-
-def render_subtitle_wizard_step():
-    """Trang quản lý phụ đề: tách vocal, transcribe, dịch và chỉnh sửa lời bài hát."""
-    import step3_subtitle_provider
-    from core.media.probe import MediaProbe
-    import os
-    
-    st.markdown("## Tạo & Duyệt phụ đề Karaoke")
-    track = st.session_state.get("selected_track")
-    if not track:
-        st.error("Chưa chọn bài nhạc. Hãy quay lại bước 2.")
-        if st.button("← Quay lại", use_container_width=True):
-            _go_to_step(2)
-        st.stop()
-        
-    project_id = st.session_state.get("project_id", "lofi_default_prj")
-    track_id = track.get("track_id")
-    audio_file = config.INPUT_AUDIO_DIR / f"{track_id}.m4a"
-    
-    # Load manifest nếu chưa có trong session_state
-    if "subtitle_manifest_data" not in st.session_state or st.session_state.get("subtitle_project_id") != project_id:
-        st.session_state["subtitle_manifest_data"] = step3_subtitle_provider.load_project_subtitles(project_id)
-        st.session_state["subtitle_project_id"] = project_id
-        
-    m = st.session_state["subtitle_manifest_data"]
-    title = str(track.get("title") or "")
-    artist = str(track.get("author") or "")
-    st.info("Ưu tiên dùng lời bài hát đã xuất bản trên mạng. AI/Whisper chỉ dùng khi không tìm được hoặc cần căn thời gian chính xác hơn.")
-    online_col, status_col = st.columns([1, 1.5], gap="medium")
-    if online_col.button("🔎 Tìm lời bài hát online", type="primary", use_container_width=True):
-        duration = 180.0
-        try:
-            duration = float(MediaProbe.probe_media(audio_file).get("duration_seconds") or duration)
-        except Exception:
-            pass
-        with st.spinner(f"Đang tìm lời của {title}..."):
-            result = step3_subtitle_provider.find_online_lyrics(title, artist, duration)
-        if result.get("found"):
-            m["lyrics"] = result["segments"]
-            m["lyrics_source"] = result["source"]
-            m["lyrics_timing"] = result["timing"]
-            m["reviewed"] = False
-            st.success(f"Đã lấy {len(result['segments'])} dòng từ {result['source']}.")
-            st.rerun()
-        else:
-            st.warning(result.get("reason", "Chưa tìm thấy lời online. Hãy dùng AI dự phòng bên dưới."))
-    if m.get("lyrics_source"):
-        timing_label = "có timestamp" if m.get("lyrics_timing") == "synced" else "đã chia thời gian ước lượng"
-        status_col.success(f"Nguồn hiện tại: {m['lyrics_source']} · {timing_label}")
-    else:
-        status_col.caption("Chưa có lời. Nếu tìm không thấy, dùng AI dự phòng ở cột trái.")
-    
-    # Nút điều hướng chính
-    control_col, editor_col = st.columns([0.8, 1.2], gap="large")
-    
-    with control_col:
-        # Cấu hình chính
-        st.markdown("#### Công cụ & Cài đặt")
-        enabled = st.checkbox("Bật phụ đề Karaoke cho video này", value=m.get("enabled", True))
-        m["enabled"] = enabled
-        
-        language = st.selectbox(
-            "Ngôn ngữ gốc của bài hát",
-            options=[("zh", "Tiếng Trung (Giản/Phồn thể)"), ("en", "Tiếng Anh / Ngôn ngữ khác")],
-            index=0 if m.get("language") == "zh" else 1,
-            format_func=lambda x: x[1]
-        )[0]
-        m["language"] = language
-        
-        st.divider()
-        st.markdown("##### 1. Tách Vocal & Beat (Demucs)")
-        model_choice = st.selectbox("Model tách", ["htdemucs"], index=0)
-        
-        vocal_path = step3_subtitle_provider.get_vocals_dir() / f"{track_id}_vocals.wav"
-        inst_path = step3_subtitle_provider.get_vocals_dir() / f"{track_id}_instrumental.wav"
-        
-        has_vocal = vocal_path.is_file() and vocal_path.stat().st_size > 1024 * 1024
-        
-        demucs_installed = step3_subtitle_provider.separator.is_demucs_installed()
-        if not demucs_installed:
-            st.info("Chưa cài `demucs` trên máy. Nhận dạng lời vẫn hoạt động trên nhạc gốc (hoặc dán lời thủ công).")
-            
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Tách âm", type="primary", use_container_width=True, disabled=not demucs_installed):
-                try:
-                    with st.spinner("Đang tách vocal (mất khoảng 1-3 phút)..."):
-                        step3_subtitle_provider.run_vocal_separation(
-                            audio_path=audio_file,
-                            model=model_choice,
-                            progress_callback=lambda p, msg: logger.info(f"[UI] {msg} ({p:.0%})")
-                        )
-                    st.success("Tách vocal thành công!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Lỗi: {e}")
-                    
-        with col2:
-            if st.button("Bỏ tách", use_container_width=True, disabled=not has_vocal):
-                vocal_path.unlink(missing_ok=True)
-                inst_path.unlink(missing_ok=True)
-                st.rerun()
-                
-        if has_vocal:
-            st.caption("🎧 Nghe thử Vocal đã tách:")
-            st.audio(str(vocal_path), format="audio/wav")
-            
-        st.divider()
-        st.markdown("##### 2. Nhận dạng lời (Whisper)")
-        whisper_model = st.selectbox("Whisper model", ["tiny", "base", "small"], index=1)
-        whisper_installed = step3_subtitle_provider.transcriber.is_whisper_installed()
-        if not whisper_installed:
-            st.info("Chưa cài `openai-whisper` trên máy. Bạn có thể dán lời thô thủ công ở cột bên phải.")
-            
-        if st.button("Tự động nhận dạng lời", type="primary", use_container_width=True, disabled=not whisper_installed):
-            target_audio = vocal_path if has_vocal else audio_file
-            try:
-                with st.spinner("Whisper đang nghe và nhận dạng lời hát..."):
-                    segments = step3_subtitle_provider.run_transcription(
-                        vocal_path=target_audio,
-                        model_name=whisper_model,
-                        language=language if language == "zh" else None,
-                        progress_callback=lambda p, msg: logger.info(f"[UI Whisper] {msg} ({p:.0%})")
-                    )
-                m["lyrics"] = segments
-                st.success(f"Nhận dạng xong {len(segments)} dòng!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Lỗi nhận dạng: {e}")
-                
-        st.divider()
-        st.markdown("##### 3. Dịch nghĩa & Phiên âm")
-        if st.button("Tự động dịch & Pinyin", type="primary", use_container_width=True, disabled=not m.get("lyrics")):
-            try:
-                with st.spinner("AI đang tạo Pinyin và dịch nghĩa tiếng Việt..."):
-                    updated = step3_subtitle_provider.auto_translate_and_pinyin(
-                        m["lyrics"],
-                        source_language=language,
-                        song_info=track
-                    )
-                m["lyrics"] = updated
-                st.success("Đã hoàn tất dịch thuật!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Lỗi dịch thuật: {e}")
-                
-        st.divider()
-        st.markdown("##### 4. Định dạng chữ (Style)")
-        style = m["style"]
-        style["font_name"] = st.text_input("Tên Font", value=style.get("font_name", "Arial"))
-        col_s1, col_s2 = st.columns(2)
-        style["font_size_original"] = col_s1.number_input("Cỡ câu gốc", value=int(style.get("font_size_original", 32)), step=1)
-        style["font_size_translation"] = col_s2.number_input("Cỡ câu dịch", value=int(style.get("font_size_translation", 20)), step=1)
-        
-        col_c1, col_c2, col_c3 = st.columns(3)
-        style["primary_color"] = col_c1.color_picker("Chữ chờ", value=style.get("primary_color", "#FFFFFF"))
-        style["secondary_color"] = col_c2.color_picker("Chữ chạy", value=style.get("secondary_color", "#FFC0CB"))
-        style["outline_color"] = col_c3.color_picker("Viền", value=style.get("outline_color", "#000000"))
-        
-        style["margin_v"] = st.slider("Khoảng cách mép dưới (Margin V)", min_value=10, max_value=200, value=int(style.get("margin_v", 60)))
-        
-        st.divider()
-        if st.button("💾 Xuất & Duyệt phụ đề", type="primary", use_container_width=True):
-            if m.get("lyrics"):
-                m["reviewed"] = True
-                step3_subtitle_provider.save_project_subtitles(project_id, m)
-                try:
-                    step3_subtitle_provider.generate_subtitles_file(project_id, m["lyrics"], style)
-                    st.success("Đã duyệt phụ đề và lưu file thành công!")
-                except Exception as e:
-                    st.error(f"Lỗi ghi file phụ đề: {e}")
-            else:
-                st.warning("Chưa có nội dung lời bài hát để duyệt.")
-                
-        if st.button("← Quay lại ảnh nền", use_container_width=True):
-            _go_to_step(3)
-            
-    with editor_col:
-        st.markdown("#### Nội dung & Căn chỉnh lời")
-        
-        # Hộp dán lời thô (nếu không dùng Whisper)
-        with st.expander("📝 Dán lời thô thủ công (Bypass Whisper)", expanded=not bool(m.get("lyrics"))):
-            raw_lyric_input = st.text_area("Dán lời bài hát thô tại đây (Mỗi dòng một câu)", height=150)
-            if st.button("Tách dòng & Phân bổ thời gian đều", use_container_width=True):
-                if raw_lyric_input.strip():
-                    lines = [line.strip() for line in raw_lyric_input.splitlines() if line.strip()]
-                    duration = 180.0
-                    try:
-                        probe = MediaProbe.probe_media(audio_file)
-                        duration = float(probe.get("duration_seconds") or 180.0)
-                    except Exception:
-                        pass
-                    segment_dur = duration / max(1, len(lines))
-                    segments = []
-                    for idx, line in enumerate(lines):
-                        start_time = idx * segment_dur
-                        end_time = (idx + 1) * segment_dur
-                        words = line.split()
-                        words_list = []
-                        word_dur = (end_time - start_time) / max(1, len(words))
-                        for w_idx, w in enumerate(words):
-                            words_list.append({
-                                "word": w,
-                                "start": start_time + w_idx * word_dur,
-                                "end": start_time + (w_idx + 1) * word_dur
-                            })
-                        segments.append({
-                            "start": start_time,
-                            "end": end_time,
-                            "text": line,
-                            "pinyin": "",
-                            "vietnamese": "",
-                            "words": words_list
-                        })
-                    m["lyrics"] = segments
-                    st.success(f"Đã tạo {len(segments)} dòng thô!")
-                    st.rerun()
-                else:
-                    st.warning("Hãy dán nội dung lời bài hát.")
-                    
-        # Danh sách câu hát
-        lyrics = m.get("lyrics") or []
-        if not lyrics:
-            st.info("Chưa có dữ liệu lời bài hát. Hãy nhận dạng hoặc dán lời thủ công ở trên.")
-        else:
-            st.markdown(f"**Danh sách các câu ({len(lyrics)} dòng):**")
-            
-            lines_per_page = 10
-            num_pages = len(lyrics) // lines_per_page + (1 if len(lyrics) % lines_per_page > 0 else 0)
-            
-            if "lyrics_page" not in st.session_state:
-                st.session_state.lyrics_page = 1
-                
-            page = st.selectbox(
-                "Trang biên tập",
-                options=list(range(1, num_pages + 1)),
-                format_func=lambda x: f"Trang {x} / {num_pages} (Dòng {(x-1)*lines_per_page + 1} - {min(len(lyrics), x*lines_per_page)})",
-                key="editor_page_select"
-            )
-            
-            start_idx = (page - 1) * lines_per_page
-            end_idx = min(len(lyrics), page * lines_per_page)
-            
-            for idx in range(start_idx, end_idx):
-                item = lyrics[idx]
-                with st.container(border=True):
-                    c1, c2 = st.columns([1, 4])
-                    c1.markdown(f"**Dòng {idx + 1}**")
-                    
-                    if c1.button("▶️ Nghe", key=f"play_seg_{idx}"):
-                        try:
-                            import subprocess
-                            temp_seg_file = config.TEMP_IMAGE_DIR / f"temp_preview_segment_{idx}.mp3"
-                            config.TEMP_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-                            subprocess.run([
-                                "ffmpeg", "-y", "-ss", str(item["start"]), "-t", str(item["end"] - item["start"]),
-                                "-i", str(audio_file), "-q:a", "4", str(temp_seg_file)
-                            ], capture_output=True, check=True, timeout=10)
-                            st.session_state[f"audio_preview_play_{idx}"] = str(temp_seg_file)
-                        except Exception as e:
-                            st.error(f"Lỗi cắt preview: {e}")
-                            
-                    if st.session_state.get(f"audio_preview_play_{idx}"):
-                        c1.audio(st.session_state[f"audio_preview_play_{idx}"])
-                        
-                    time_col1, time_col2 = c2.columns(2)
-                    item["start"] = float(time_col1.number_input("Bắt đầu (giây)", value=float(item["start"]), step=0.1, key=f"start_{idx}"))
-                    item["end"] = float(time_col2.number_input("Kết thúc (giây)", value=float(item["end"]), step=0.1, key=f"end_{idx}"))
-                    
-                    item["text"] = c2.text_input("Lời gốc", value=item.get("text", ""), key=f"orig_{idx}")
-                    if language == "zh":
-                        item["pinyin"] = c2.text_input("Phiên âm Pinyin", value=item.get("pinyin", ""), key=f"pin_{idx}")
-                    item["vietnamese"] = c2.text_input("Dịch nghĩa Việt", value=item.get("vietnamese", ""), key=f"viet_{idx}")
-                    
-                    op_col1, op_col2 = c2.columns(2)
-                    if op_col1.button("🗑️ Xóa dòng này", key=f"del_{idx}", use_container_width=True):
-                        lyrics.pop(idx)
-                        st.session_state["subtitle_manifest_data"]["lyrics"] = lyrics
-                        st.rerun()
-                    if op_col2.button("➕ Thêm dòng mới phía dưới", key=f"add_{idx}", use_container_width=True):
-                        new_item = {
-                            "start": item["end"],
-                            "end": item["end"] + 3.0,
-                            "text": "",
-                            "pinyin": "",
-                            "vietnamese": "",
-                            "words": []
-                        }
-                        lyrics.insert(idx + 1, new_item)
-                        st.session_state["subtitle_manifest_data"]["lyrics"] = lyrics
-                        st.rerun()
-                        
-            if st.button("➕ Thêm dòng mới ở cuối danh sách", use_container_width=True):
-                last_end = lyrics[-1]["end"] if lyrics else 0.0
-                lyrics.append({
-                    "start": last_end,
-                    "end": last_end + 3.0,
-                    "text": "",
-                    "pinyin": "",
-                    "vietnamese": "",
-                    "words": []
-                })
-                st.session_state["subtitle_manifest_data"]["lyrics"] = lyrics
-                st.rerun()
-                
-        st.divider()
-        if st.button("Xác nhận & Sang bước chọn hiệu ứng →", type="primary", use_container_width=True):
-            step3_subtitle_provider.save_project_subtitles(project_id, m)
-            try:
-                step3_subtitle_provider.generate_subtitles_file(project_id, m["lyrics"], m["style"])
-            except Exception:
-                pass
-            _go_to_step(5)
-
-def _ensure_effect_off_video() -> Path:
-    """Tạo overlay đen trung tính để renderer giữ nguyên ảnh khi hiệu ứng tắt."""
-    import subprocess
-    path = config.EFFECTS_DIR / "effect_off.mp4"
-    if path.exists() and path.stat().st_size > 1024:
-        return path
-    config.EFFECTS_DIR.mkdir(parents=True, exist_ok=True)
-    subprocess.run([
-        "ffmpeg", "-y", "-f", "lavfi", "-i",
-        "color=c=black:s=1920x1080:r=24:d=2",
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path),
-    ], capture_output=True, check=True, timeout=60)
-    return path
-
-
-def _effect_display_name(path: Path) -> str:
-    """Tên hiệu ứng ngắn, dễ đọc trên giao diện."""
-    name = Path(path).stem.lower()
-    labels = {
-        "effect_rain_fall": "Mưa rơi",
-        "effect_snow_fall": "Tuyết rơi",
-        "effect_dust_soft": "Bụi sáng nhẹ",
-        "effect_retro_scanline": "Retro scanline",
-        "effect_light_film_grain": "Film grain",
-        "default_effect": "Mặc định",
-    }
-    if name in labels:
-        return labels[name]
-    return name.replace("effect_", "").replace("pexels_", "").replace("_", " ").title()
-
-
-EFFECT_TYPE_LABELS = {
-    "auto": "Tự động (theo phân tích)",
-    "screen_black": "Nền đen - Screen",
-    "chroma_key": "Phông xanh - Chroma key",
-    "alpha": "Có kênh alpha",
-    "normal": "Video thường - Giữ nguyên",
-}
-BLEND_MODE_LABELS = {
-    "normal": "Bình thường (khuyên dùng)",
-    "screen": "Screen",
-    "lighten": "Lighten",
-    "overlay": "Overlay",
-    "soft-light": "Soft light",
-}
-
-
-def _resolve_pixabay_api_key() -> tuple[str, str]:
-    """Một API key duy nhất: .env/config → st.secrets → ô nhập. Trả về (key, nguồn)."""
-    env_key = ""
-    try:
-        env_file = config.BASE_DIR / ".env"
-        if env_file.is_file():
-            for line in env_file.read_text(encoding="utf-8-sig").splitlines():
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    k, v = k.strip(), v.strip().strip('"').strip("'")
-                    if k == "PIXABAY_API_KEY" and v:
-                        env_key = v
-                        os.environ["PIXABAY_API_KEY"] = v
-                        config.PIXABAY_API_KEY = v
-                        break
-    except Exception:
-        pass
-
-    key = env_key or str(getattr(config, "PIXABAY_API_KEY", "") or os.getenv("PIXABAY_API_KEY", "") or "").strip()
-    if key:
-        return key, "env"
-    try:
-        key = str(st.secrets.get("PIXABAY_API_KEY", "") or "").strip()
-    except Exception:
-        key = ""
-    if key:
-        return key, "secrets"
-    return str(st.session_state.get("pixabay_api_key_input") or "").strip(), "input"
-
-
-def _selected_effect_metadata(effect_path) -> dict:
-    try:
-        return step3_effect_provider.get_effect_metadata(effect_path)
-    except Exception:
-        return {}
-
-
-def _resolved_effect_type(metadata: dict) -> str:
-    """effect_type thực tế sau khi giải nghĩa lựa chọn 'Tự động'."""
-    choice = str(st.session_state.get("effect_type_choice", "auto"))
-    if choice != "auto":
-        return choice
-    return str(metadata.get("effect_type") or "screen_black")
-
-
-def _current_effect_settings(metadata: dict | None = None) -> dict:
-    """Bộ thông số compositing thống nhất cho Live Preview, preview FFmpeg và render cuối."""
-    metadata = metadata if metadata is not None else _selected_effect_metadata(st.session_state.get("effect_path") or "")
-    return {
-        "effect_type": _resolved_effect_type(metadata),
-        "blend_mode": str(st.session_state.get("effect_live_blend_mode", "normal")),
-        "opacity": float(st.session_state.get("effect_live_opacity", 0.55)),
-        "speed": float(st.session_state.get("effect_live_speed", 1.0)),
-        "key_color": str(st.session_state.get("effect_key_color", "#00FF00")),
-        "chroma_similarity": float(st.session_state.get("effect_chroma_similarity", 0.18)),
-        "chroma_softness": float(st.session_state.get("effect_chroma_softness", 0.08)),
-        "despill": float(st.session_state.get("effect_despill", 0.35)),
-        "edge_feather": float(st.session_state.get("effect_edge_feather", 1.5)),
-    }
-
-
-def _apply_recommended_composite(metadata: dict) -> None:
-    """Khôi phục thông số từ phân tích local hoặc hồ sơ AI (ưu tiên phân tích)."""
-    recommended = dict((metadata or {}).get("recommended_composite") or {})
-    profile = st.session_state.get("ai_effect_profile") or {}
-    source = recommended or profile
-    if not source:
-        return
-    def _num(key, default):
-        value = source.get(key)
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return default
-    st.session_state.effect_live_opacity = _num("opacity", 0.55)
-    st.session_state.effect_live_speed = _num("speed", 1.0)
-    blend = str(source.get("blend_mode") or "normal")
-    st.session_state.effect_live_blend_mode = blend if blend in BLEND_MODE_LABELS else "normal"
-    if metadata.get("effect_type"):
-        st.session_state.effect_type_choice = "auto"
-    if source.get("key_color"):
-        st.session_state.effect_key_color = str(source["key_color"])
-    st.session_state.effect_chroma_similarity = _num("chroma_similarity", 0.18)
-    st.session_state.effect_chroma_softness = _num("chroma_softness", 0.08)
-    st.session_state.effect_despill = _num("despill", 0.35)
-    st.session_state.effect_edge_feather = _num("edge_feather", 1.5)
-
-
-def _auto_analyze_selected_effect(selected_effect: Path) -> dict:
-    """Phân tích loại nền một lần cho mỗi file (kết quả lưu vào manifest)."""
-    metadata = _selected_effect_metadata(selected_effect)
-    if metadata.get("effect_type"):
-        return metadata
-    analyzed_marker = f"analyzed::{selected_effect.name}"
-    if st.session_state.get("effect_analyze_marker") == analyzed_marker:
-        return metadata
-    try:
-        with st.spinner("Đang phân tích loại nền của video hiệu ứng..."):
-            step3_effect_provider.analyze_effect_type(selected_effect)
-        metadata = _selected_effect_metadata(selected_effect)
-    except Exception as exc:
-        st.session_state.effect_analyze_error = str(exc)
-    st.session_state.effect_analyze_marker = analyzed_marker
-    return metadata
-
-
-def _render_effect_candidate_card(candidate: dict, key_prefix: str, index: int) -> None:
-    """Card ứng viên: thumbnail, điểm AI, thông số, nguồn/license và nút chọn."""
-    is_local = candidate.get("origin") == "local" or bool(candidate.get("file_name"))
-    with st.container(border=True):
-        thumb = str(candidate.get("thumbnail_url") or "")
-        if thumb:
-            info_col, thumb_col = st.columns([0.62, 0.38])
-            with thumb_col:
-                st.image(thumb, use_container_width=True)
-        else:
-            info_col = st.container()
-        with info_col:
-            if is_local:
-                name = _effect_display_name(Path(str(candidate.get("file_name") or "effect")))
-            else:
-                name = ", ".join(candidate.get("tags", [])[:4]) or f"Video #{candidate.get('id')}"
-            score = candidate.get("ai_score")
-            score_text = f" · AI {score}/100" if score is not None else ""
-            st.markdown(f"**{name}**{score_text}")
-            duration = candidate.get("duration") or candidate.get("duration_seconds")
-            size_mb = float(candidate.get("file_size") or 0) / 1024 / 1024
-            meta_bits = []
-            if duration:
-                meta_bits.append(f"{float(duration):.0f} giây")
-            if candidate.get("height"):
-                meta_bits.append(f"{candidate.get('width') or '?'}×{candidate.get('height')}")
-            if size_mb:
-                meta_bits.append(f"{size_mb:.1f} MB")
-            meta_bits.append("Local" if is_local else "Pixabay")
-            st.caption(" · ".join(meta_bits))
-            st.caption(str(candidate.get("license_name") or "Pixabay Content License"))
-            if candidate.get("ai_reason"):
-                st.caption(candidate["ai_reason"])
-        source_col, pick_col = st.columns([1.0, 1.0])
-        with source_col:
-            page_url = candidate.get("page_url") or candidate.get("source_page_url")
-            if page_url:
-                st.link_button("Xem nguồn", page_url, use_container_width=True)
-        with pick_col:
-            if is_local:
-                if st.button("Chọn", key=f"{key_prefix}_pick_{index}", type="primary", use_container_width=True):
-                    local_path = config.EFFECTS_DIR / str(candidate.get("file_name"))
-                    if local_path.is_file():
-                        _select_effect_path(local_path)
-                        st.rerun()
-                    st.error("File hiệu ứng không còn trên ổ đĩa.")
-            else:
-                if st.button("Tải và chọn", key=f"{key_prefix}_dl_{index}", type="primary", use_container_width=True):
-                    try:
-                        with st.spinner("Đang tải và kiểm tra video..."):
-                            downloaded = step3_effect_provider.download_pixabay_effect(candidate)
-                        _select_effect_path(downloaded)
-                        st.success(f"Đã lưu {downloaded.name}")
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"Tải hiệu ứng thất bại: {exc}")
-
-
-def _render_suggest_tab(pixabay_api_key: str) -> None:
-    """Tab Đề xuất: AI tạo hồ sơ, xếp hạng local trước, thiếu mới tìm Pixabay."""
-    track = st.session_state.get("selected_track") or {}
-    try:
-        music_tags = track.get("style_tags") or step1_music_hunter.classify_music_styles(track)
-    except Exception:
-        music_tags = []
-    if isinstance(music_tags, str):
-        music_tags = [item.strip() for item in music_tags.split(",") if item.strip()]
-    mood_text = ", ".join(music_tags[:4]) if music_tags else "chưa phân loại"
-    st.caption(f"Nhạc: **{track.get('title', 'Chưa chọn')}** · Mood: {mood_text}")
-
-    image_context = " ".join(filter(None, [
-        str(st.session_state.get("image_prompt") or ""),
-        str(st.session_state.get("dreamina_prompt_vi") or ""),
-    ]))
-    if st.button("Phân tích và đề xuất", type="primary", use_container_width=True):
-        with st.spinner("AI đang tạo hồ sơ hiệu ứng..."):
-            profile = step3_effect_provider.build_ai_effect_profile(track, list(music_tags or []), image_context)
-        st.session_state.ai_effect_profile = profile
-        _apply_ai_effect_settings(profile)
-        with st.spinner("Đang xếp hạng thư viện local và tìm bổ sung..."):
-            st.session_state.effect_recommendations = step3_effect_provider.recommend_effects(
-                profile, pixabay_api_key
-            )
-        st.rerun()
-
-    ai_profile = st.session_state.get("ai_effect_profile") or {}
-    if ai_profile:
-        source_label = "AI" if ai_profile.get("source") == "ai" else "Mapping local dự phòng"
-        effect_type_label = EFFECT_TYPE_LABELS.get(str(ai_profile.get("effect_type") or ""), "?")
-        st.caption(f"Nguồn đề xuất: {source_label} · Loại asset: {effect_type_label}")
-        st.write(ai_profile.get("reason") or "Đã tạo hồ sơ hiệu ứng.")
-        st.caption("Query: " + " · ".join(ai_profile.get("queries") or []))
-        if ai_profile.get("error"):
-            st.warning("AI online chưa khả dụng, đang dùng mapping local. " + str(ai_profile["error"]))
-
-    recommendations = st.session_state.get("effect_recommendations") or {}
-    merged = list(recommendations.get("local") or []) + list(recommendations.get("online") or [])
-    if recommendations:
-        note_bits = [f"{len(recommendations.get('local') or [])} local"]
-        if recommendations.get("used_pixabay"):
-            note_bits.append(f"{len(recommendations.get('online') or [])} Pixabay")
-        else:
-            note_bits.append("đủ kết quả local, không gọi Pixabay")
-        if recommendations.get("online_error"):
-            st.warning(f"Pixabay lỗi: {recommendations['online_error']}")
-        st.caption("Ứng viên: " + " · ".join(note_bits) + " · chỉ tải video bạn bấm chọn.")
-    if merged:
-        for index, candidate in enumerate(merged[:3]):
-            _render_effect_candidate_card(candidate, "suggest_top", index)
-        if len(merged) > 3:
-            with st.expander(f"Xem thêm {len(merged) - 3} kết quả"):
-                for index, candidate in enumerate(merged[3:12]):
-                    _render_effect_candidate_card(candidate, "suggest_more", index + 3)
-    elif recommendations:
-        st.info("Chưa có ứng viên phù hợp. Thử tìm thủ công trong tab Thư viện.")
-
-
-def _render_adjust_tab(selected_effect: Path | None, metadata: dict) -> None:
-    """Tab Điều chỉnh: loại hiệu ứng, opacity/tốc độ, chế độ ghép và chroma key."""
-    if not selected_effect:
-        st.info("Chọn hiệu ứng ở tab Đề xuất hoặc Thư viện trước.")
-        return
-
-    detected_type = str(metadata.get("effect_type") or "")
-    confidence = metadata.get("detection_confidence")
-    if detected_type:
-        confidence_text = f" (tin cậy {float(confidence):.0%})" if confidence else ""
-        st.caption(
-            f"Phân tích: **{EFFECT_TYPE_LABELS.get(detected_type, detected_type)}**{confidence_text}"
-            + (f" · nền {metadata.get('detected_background')}" if metadata.get("detected_background") else "")
-        )
-    else:
-        if st.button("Phân tích loại nền video này", use_container_width=True):
-            try:
-                with st.spinner("Đang phân tích khung hình..."):
-                    step3_effect_provider.analyze_effect_type(selected_effect)
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Không phân tích được: {exc}")
-
-    type_keys = list(EFFECT_TYPE_LABELS.keys())
-    current_choice = str(st.session_state.get("effect_type_choice", "auto"))
-    if current_choice not in type_keys:
-        current_choice = "auto"
-    choice = st.selectbox(
-        "Loại hiệu ứng",
-        type_keys,
-        index=type_keys.index(current_choice),
-        format_func=lambda value: EFFECT_TYPE_LABELS[value],
-    )
-    st.session_state.effect_type_choice = choice
-    resolved_type = _resolved_effect_type(metadata)
-
-    # Cảnh báo chọn sai chế độ với video phông xanh.
-    if detected_type == "chroma_key" and resolved_type != "chroma_key":
-        st.warning(
-            "Video có dấu hiệu phông xanh. Chế độ hiện tại có thể để lại màu xanh. "
-            "Hãy chuyển sang Phông xanh - Chroma key."
-        )
-
-    st.session_state.effect_live_opacity = st.slider(
-        "Độ mạnh hiệu ứng (opacity)", 0.0, 1.0,
-        float(st.session_state.get("effect_live_opacity", 0.55)), 0.05,
-    )
-    speed_col, blend_col = st.columns(2)
-    with speed_col:
-        current_speed = max(0.5, min(float(st.session_state.get("effect_live_speed", 1.0)), 1.5))
-        st.session_state.effect_live_speed = st.slider("Tốc độ", 0.5, 1.5, current_speed, 0.05)
-    with blend_col:
-        blend_keys = list(BLEND_MODE_LABELS.keys())
-        current_blend = str(st.session_state.get("effect_live_blend_mode", "normal"))
-        if current_blend not in blend_keys:
-            current_blend = "normal"
-        blend_disabled = resolved_type in ("chroma_key", "alpha")
-        blend = st.selectbox(
-            "Chế độ hòa trộn",
-            blend_keys,
-            index=blend_keys.index(current_blend),
-            format_func=lambda value: BLEND_MODE_LABELS[value],
-            disabled=blend_disabled,
-            help="Chroma key và video alpha luôn ghép theo kênh alpha nên không cần blend.",
-        )
-        st.session_state.effect_live_blend_mode = blend
-
-    if resolved_type == "chroma_key":
-        st.markdown("##### Thông số chroma key")
-        st.session_state.effect_key_color = st.color_picker(
-            "Màu phông", value=str(st.session_state.get("effect_key_color", "#00FF00")),
-        )
-        chroma_col_a, chroma_col_b = st.columns(2)
-        with chroma_col_a:
-            st.session_state.effect_chroma_similarity = st.slider(
-                "Similarity", 0.05, 0.50, float(st.session_state.get("effect_chroma_similarity", 0.18)), 0.01,
-                help="Cao hơn xóa nhiều màu hơn nhưng dễ ăn vào chủ thể.",
-            )
-            st.session_state.effect_despill = st.slider(
-                "Despill", 0.0, 1.0, float(st.session_state.get("effect_despill", 0.35)), 0.05,
-                help="Khử viền ám xanh trên mép chủ thể.",
-            )
-        with chroma_col_b:
-            st.session_state.effect_chroma_softness = st.slider(
-                "Softness", 0.0, 0.40, float(st.session_state.get("effect_chroma_softness", 0.08)), 0.01,
-                help="Mép alpha chuyển mềm thay vì cắt cứng.",
-            )
-            st.session_state.effect_edge_feather = st.slider(
-                "Feather viền (px)", 0.0, 5.0, float(st.session_state.get("effect_edge_feather", 1.5)), 0.1,
-                help="Chỉ áp trong FFmpeg preview/render; Live Preview chưa hỗ trợ.",
-            )
-        matte_col, quality_col = st.columns(2)
-        with matte_col:
-            st.session_state.effect_show_matte = st.toggle(
-                "Xem matte", value=bool(st.session_state.get("effect_show_matte", False)),
-                help="Hiện mặt nạ đen trắng để kiểm tra vùng bị xóa.",
-            )
-        with quality_col:
-            quality_label = st.radio(
-                "Chất lượng Live Preview",
-                ["Nhanh 640×360", "Rõ 960×540"],
-                index=1 if st.session_state.get("effect_preview_quality") == "sharp" else 0,
-                horizontal=True,
-            )
-            st.session_state.effect_preview_quality = "sharp" if "960" in quality_label else "fast"
-
-    if st.button("Khôi phục thông số đề xuất", use_container_width=True):
-        _apply_recommended_composite(metadata)
-        st.rerun()
-
-
-def _render_library_tab(effects: list[Path], selected_effect: Path | None, pixabay_api_key: str, key_source: str, manifest_summary: dict | None, image_value) -> None:
-    """Tab Thư viện: chọn local, tìm Pixabay thủ công, quản trị manifest, phân tích cảnh."""
-    if effects:
-        current_name = Path(st.session_state.effect_path).name if st.session_state.get("effect_path") else effects[0].name
-        current_index = next((i for i, item in enumerate(effects) if item.name == current_name), 0)
-        selected_name = st.selectbox(
-            "Hiệu ứng trong thư viện",
-            options=[item.name for item in effects],
-            index=current_index,
-            format_func=lambda value: _effect_display_name(Path(value)),
-        )
-        chosen = next(item for item in effects if item.name == selected_name)
-        if st.session_state.get("effect_path") != str(chosen.resolve()):
-            _select_effect_path(chosen)
-            st.rerun()
-    else:
-        st.warning("Chưa có hiệu ứng trong thư viện.")
-    if st.button("Tạo bộ hiệu ứng mẫu (mưa, tuyết, bụi...)", use_container_width=True):
-        with st.spinner("Đang tạo hiệu ứng mẫu..."):
-            step3_effect_provider.create_builtin_effect_pack()
-        st.rerun()
-
-    st.markdown("##### Tìm thủ công trên Pixabay")
-    if key_source == "input":
-        st.text_input(
-            "Pixabay API key", type="password", key="pixabay_api_key_input",
-            help="Lấy key miễn phí tại pixabay.com/api/docs. Ưu tiên đặt PIXABAY_API_KEY trong .env; key không được lưu vào app state hay manifest.",
-        )
-        pixabay_api_key = str(st.session_state.get("pixabay_api_key_input") or "").strip()
-    else:
-        st.caption("Pixabay API: **Đã kết nối** (" + (".env" if key_source == "env" else "st.secrets") + ")")
-
-    track = st.session_state.get("selected_track") or {}
-    default_effect_query = suggest_effect_query_from_track(track)
-    search_query = st.text_input(
-        "Từ khóa hiệu ứng", value=default_effect_query, key="pixabay_effect_query",
-        help="Nói rõ loại asset: rain green screen, smoke black background overlay...",
-    )
-    if st.button("Tìm hiệu ứng Pixabay", use_container_width=True):
-        try:
-            with st.spinner("Đang tìm metadata Pixabay..."):
-                st.session_state.manual_pixabay_results = _search_pixabay_effects_cached(
-                    search_query.strip(), pixabay_api_key
-                )
-            if not st.session_state.manual_pixabay_results:
-                st.info("Pixabay không trả về kết quả phù hợp.")
-        except Exception as exc:
-            st.session_state.manual_pixabay_results = []
-            st.error(f"Không tìm được hiệu ứng: {exc}")
-    manual_results = st.session_state.get("manual_pixabay_results") or []
-    for result_index, candidate in enumerate(manual_results[:6]):
-        _render_effect_candidate_card(candidate, "manual", result_index)
-
-    with st.expander("Quản lý manifest (nâng cao)", expanded=False):
-        if manifest_summary:
-            st.caption(
-                f"Manifest: {manifest_summary['ready']} sẵn sàng · "
-                f"{manifest_summary['missing']} thất lạc · "
-                f"{manifest_summary['duplicate_hashes']} trùng nội dung"
-            )
-        records = step3_effect_provider.list_effect_records(include_missing=True)
-        for record in records:
-            record_status = "Sẵn sàng" if record.get("status") == "ready" else "Thiếu file"
-            provider = str(record.get("provider") or "local").title()
-            license_name = str(record.get("license_name") or "Chưa xác định")
-            type_label = EFFECT_TYPE_LABELS.get(str(record.get("effect_type") or ""), "chưa phân tích")
-            st.caption(f"{record.get('file_name')} · {provider} · {record_status} · {type_label} · {license_name}")
-        manifest_action_col, cleanup_action_col = st.columns(2)
-        with manifest_action_col:
-            if st.button("Quét lại manifest", use_container_width=True):
-                try:
-                    step3_effect_provider.sync_effect_manifest(calculate_hashes=True)
-                    st.success("Đã đồng bộ lại manifest.")
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Không đồng bộ được manifest: {exc}")
-        with cleanup_action_col:
-            if st.button("Dọn mục thất lạc", use_container_width=True):
-                removed = step3_effect_provider.remove_missing_manifest_entries()
-                st.success(f"Đã dọn {removed} mục metadata thất lạc.")
-                st.rerun()
-        if st.button("Phân tích loại nền toàn thư viện", use_container_width=True):
-            analyzed = 0
-            with st.spinner("Đang phân tích các video hiệu ứng..."):
-                for record in step3_effect_provider.list_effect_records():
-                    file_path = config.EFFECTS_DIR / str(record.get("file_name"))
-                    if record.get("effect_type") or not file_path.is_file():
-                        continue
-                    try:
-                        step3_effect_provider.analyze_effect_type(file_path)
-                        analyzed += 1
-                    except Exception:
-                        continue
-            st.success(f"Đã phân tích {analyzed} video.")
-            st.rerun()
-
-    with st.expander("AI phân tích cảnh (nâng cao)", expanded=False):
-        scene_manifest = st.session_state.get("scene_layers_manifest")
-        scene_image_key = str(Path(image_value).resolve())
-        scene_ready = bool(
-            scene_manifest
-            and st.session_state.get("scene_layers_image") == scene_image_key
-            and _path_exists((scene_manifest or {}).get("mask_preview_path"))
-        )
-        force_analysis = st.checkbox("Phân tích lại từ đầu", value=False)
-        if st.button("Phân tích ảnh", use_container_width=True):
-            try:
-                from core.image.scene_layer_processor import SceneLayerProcessor
-                environment = SceneLayerProcessor.inspect_environment()
-                missing = [name for name in ("torch", "transformers") if not environment.get(name)]
-                if missing:
-                    raise RuntimeError("Thiếu thư viện AI: " + ", ".join(missing))
-                with st.spinner("Đang phân tích các lớp cảnh..."):
-                    manifest = SceneLayerProcessor.analyze_scene(
-                        Path(image_value),
-                        st.session_state.get("project_id", "lofi_default_prj"),
-                        force_recreate=force_analysis,
-                        model_id=getattr(config, "SCENE_SEGMENTATION_MODEL", None),
-                        min_component_ratio=float(getattr(config, "SCENE_MASK_MIN_COMPONENT_RATIO", 0.00035)),
-                        feather_radius=int(getattr(config, "SCENE_MASK_FEATHER_RADIUS", 2)),
-                    )
-                st.session_state.scene_layers_manifest = manifest
-                st.session_state.scene_layers_image = scene_image_key
-                st.session_state.scene_analysis_error = None
-                save_persisted_app_state()
-                st.rerun()
-            except Exception as exc:
-                st.session_state.scene_analysis_error = str(exc)
-                st.error(f"Phân tích thất bại: {exc}")
-        if scene_ready:
-            coverage = scene_manifest.get("coverage") or {}
-            st.image(str(scene_manifest["mask_preview_path"]), use_container_width=True)
-            st.caption(
-                f"Lá gần {float(coverage.get('leaves_near', 0))*100:.1f}% · "
-                f"Lá giữa {float(coverage.get('leaves_mid', 0))*100:.1f}% · "
-                f"Kiến trúc {float(coverage.get('architecture', 0))*100:.1f}% · "
-                f"Bầu trời {float(coverage.get('sky', 0))*100:.1f}%"
-            )
-        elif st.session_state.get("scene_analysis_error"):
-            st.warning(st.session_state.scene_analysis_error)
-
-
-def _render_text_tab() -> None:
-    from core.text import provider as text_effect_provider
-    from core.text.effect_manifest import save_text_profile
-    
-    project_id = st.session_state.get("project_id", "lofi_default_prj")
-    track = st.session_state.get("selected_track") or {}
-    
-    # Initialize text_profile in session state if not present
-    if "text_profile" not in st.session_state or st.session_state["text_profile"] is None:
-        from core.text.effect_manifest import load_text_profile
-        loaded = load_text_profile(project_id)
-        if loaded:
-            st.session_state["text_profile"] = text_effect_provider.normalize_text_profile(loaded)
-        else:
-            st.session_state["text_profile"] = text_effect_provider.default_text_profile()
-            
-    p = st.session_state["text_profile"]
-    
-    enabled = st.checkbox("Bật chữ động hiển thị trên video", value=p.get("enabled", True), key="text_enabled_cb")
-    p["enabled"] = enabled
-    
-    if enabled:
-        st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            content_type = st.selectbox(
-                "Nội dung hiển thị",
-                options=list(text_effect_provider.CONTENT_TYPES.keys()),
-                format_func=lambda k: text_effect_provider.CONTENT_TYPES[k],
-                index=list(text_effect_provider.CONTENT_TYPES.keys()).index(p.get("content_type", "track_title"))
-            )
-            p["content_type"] = content_type
-            
-            # Default content logic based on content type
-            default_val = ""
-            if content_type == "track_title":
-                default_val = track.get("title", "")
-            elif content_type == "artist":
-                default_val = track.get("artist", "")
-            elif content_type == "topic":
-                default_val = track.get("vibe", "") or "Chill Lo-Fi Beat"
-            elif content_type == "short_desc":
-                default_val = "Thư giãn đầu óc với bản nhạc này..."
-            elif content_type == "intro_message":
-                default_val = "Chào mừng bạn đến với kênh lofi chill."
-            elif content_type == "series":
-                default_val = "Lo-Fi Collection"
-            else:
-                default_val = p.get("content", "")
-                
-            content_input_val = p.get("content") or default_val
-            
-            content = st.text_area("Nội dung chi tiết", value=content_input_val, max_chars=200, key="text_content_input")
-            p["content"] = content
-            
-        with col2:
-            st.caption("🪄 Tự động đề xuất bằng AI")
-            if st.button("AI gợi ý phong cách & hiệu ứng", use_container_width=True):
-                with st.spinner("AI đang gợi ý..."):
-                    music_tags = track.get("style_tags") or []
-                    if isinstance(music_tags, str):
-                        music_tags = [item.strip() for item in music_tags.split(",") if item.strip()]
-                    image_context = st.session_state.get("image_prompt", "")
-                    
-                    ai_profile = text_effect_provider.build_ai_text_profile(
-                        track=track,
-                        music_tags=list(music_tags),
-                        image_context=image_context,
-                        content=content,
-                        current=p
-                    )
-                    st.session_state["text_profile"] = ai_profile
-                    save_text_profile(project_id, ai_profile)
-                    st.session_state.effect_preview_path = None
-                    st.session_state.effect_preview_key = None
-                    st.success("Đã áp dụng gợi ý từ AI!")
-                    st.rerun()
-                    
-        st.markdown("##### 🎨 Kiểu dáng & Định vị")
-        col3, col4, col5 = st.columns(3)
-        with col3:
-            preset = st.selectbox(
-                "Preset kiểu chữ",
-                options=text_effect_provider.STYLE_PRESETS,
-                index=text_effect_provider.STYLE_PRESETS.index(p.get("preset", "minimal"))
-            )
-            p["preset"] = preset
-            
-            font_style = st.selectbox(
-                "Kiểu font chữ",
-                options=text_effect_provider.FONT_STYLES,
-                index=text_effect_provider.FONT_STYLES.index(p.get("font_style", "sans")),
-                help="sans (Segoe UI), serif (Times New Roman), display (Arial Black)"
-            )
-            p["font_style"] = font_style
-            
-        with col4:
-            font_size = st.slider("Cỡ chữ", min_value=16, max_value=200, value=int(p.get("font_size", 72)))
-            p["font_size"] = font_size
-            
-            bold = st.checkbox("In đậm chữ", value=p.get("bold", True))
-            p["bold"] = bold
-            
-        with col5:
-            from core.text.effect_renderer import POSITIONS
-            position = st.selectbox(
-                "Vị trí hiển thị",
-                options=list(POSITIONS.keys()),
-                index=list(POSITIONS.keys()).index(p.get("position", "bottom_center"))
-            )
-            p["position"] = position
-            
-        col6, col7, col8 = st.columns(3)
-        with col6:
-            text_color = st.color_picker("Màu chữ", value=p.get("text_color", "#FFFFFF"))
-            p["text_color"] = text_color
-        with col7:
-            outline_color = st.color_picker("Màu viền chữ", value=p.get("outline_color", "#101820"))
-            p["outline_color"] = outline_color
-        with col8:
-            outline_width = st.slider("Độ dày viền", min_value=0.0, max_value=8.0, value=float(p.get("outline_width", 2.0)), step=0.5)
-            p["outline_width"] = outline_width
-            
-        st.markdown("##### ⏱️ Hiệu ứng xuất hiện & thời gian")
-        col9, col10 = st.columns(2)
-        with col9:
-            from core.text.effect_renderer import INTRO_EFFECTS, HOLD_EFFECTS
-            intro_effect = st.selectbox(
-                "Hiệu ứng xuất hiện (Intro)",
-                options=INTRO_EFFECTS,
-                index=INTRO_EFFECTS.index(p.get("intro_effect", "fade"))
-            )
-            p["intro_effect"] = intro_effect
-            
-            intro_duration = st.slider(
-                "Thời gian xuất hiện (s)",
-                min_value=0.0, max_value=5.0,
-                value=float(p.get("intro_duration", 0.8)), step=0.1
-            )
-            p["intro_duration"] = intro_duration
-            
-            hold_effect = st.selectbox(
-                "Hiệu ứng trong lúc hiển thị",
-                options=HOLD_EFFECTS,
-                index=HOLD_EFFECTS.index(p.get("hold_effect", "soft_glow"))
-            )
-            p["hold_effect"] = hold_effect
-            
-        with col10:
-            from core.text.effect_renderer import OUTRO_EFFECTS
-            outro_effect = st.selectbox(
-                "Hiệu ứng biến mất (Outro)",
-                options=OUTRO_EFFECTS,
-                index=OUTRO_EFFECTS.index(p.get("outro_effect", "fade"))
-            )
-            p["outro_effect"] = outro_effect
-            
-            outro_duration = st.slider(
-                "Thời gian biến mất (s)",
-                min_value=0.0, max_value=5.0,
-                value=float(p.get("outro_duration", 1.0)), step=0.1
-            )
-            p["outro_duration"] = outro_duration
-            
-        col11, col12 = st.columns(2)
-        with col11:
-            start_seconds = st.number_input(
-                "Thời điểm xuất hiện (giây thứ)",
-                min_value=0.0, value=float(p.get("start_seconds", 0.0)), step=1.0
-            )
-            p["start_seconds"] = start_seconds
-        with col12:
-            end_seconds_raw = p.get("end_seconds")
-            end_seconds_val = float(end_seconds_raw) if end_seconds_raw not in (None, "") else 0.0
-            use_end_limit = st.checkbox("Đặt thời điểm biến mất", value=(end_seconds_raw not in (None, "")))
-            if use_end_limit:
-                end_seconds = st.number_input(
-                    "Thời điểm biến mất (giây thứ)",
-                    min_value=start_seconds + 0.1,
-                    value=max(start_seconds + 1.0, end_seconds_val),
-                    step=1.0
-                )
-                p["end_seconds"] = end_seconds
-            else:
-                p["end_seconds"] = None
-                st.caption("Chạy hết thời lượng video.")
-                
-    st.session_state["text_profile"] = p
-    save_text_profile(project_id, p)
-
-
 def render_effect_wizard_step():
     """Bước hiệu ứng: 3 tab Đề xuất / Điều chỉnh / Thư viện, preview cố định bên phải."""
     st.markdown("## Hiệu ứng")
     image_value = st.session_state.get("image_path")
     if not _path_exists(image_value):
         st.warning("Hãy chọn ảnh nền trước.")
-        if st.button("← Quay lại ảnh nền", use_container_width=True):
-            _go_to_step(3)
+        if st.button("← Quay lại nhạc & ảnh", use_container_width=True):
+            _go_to_step(4)  # -> Tạo ảnh nền
         st.stop()
+
+    track = st.session_state.get("selected_track") or {}
+    project_id = st.session_state.get("project_id", "lofi_default_prj")
+    audio_file = config.INPUT_AUDIO_DIR / f"{track.get('track_id', '')}.m4a"
+    if "subtitle_manifest_data" not in st.session_state or st.session_state.get("subtitle_project_id") != project_id:
+        st.session_state["subtitle_manifest_data"] = step3_provider.load_project_subtitles(project_id)
+        st.session_state["subtitle_project_id"] = project_id
+    subtitle_manifest = st.session_state["subtitle_manifest_data"]
+    subtitle_duration = 180.0
+    try:
+        from core.media.probe import MediaProbe
+        subtitle_duration = float(MediaProbe.probe_media(audio_file).get("duration_seconds") or subtitle_duration)
+    except Exception:
+        pass
 
     control_col, preview_col = st.columns([0.9, 1.1], gap="medium")
 
@@ -3024,13 +2741,13 @@ def render_effect_wizard_step():
             st.info("Ảnh nền được giữ nguyên, không phủ hiệu ứng.")
         else:
             try:
-                manifest_summary = step3_effect_provider.sync_effect_manifest()
+                manifest_summary = step3_provider.sync_effect_manifest()
             except Exception as manifest_error:
                 manifest_summary = None
                 st.warning(f"Chưa đồng bộ được manifest hiệu ứng: {manifest_error}")
             effects = (
-                step3_effect_provider.list_effect_videos()
-                if hasattr(step3_effect_provider, "list_effect_videos")
+                step3_provider.list_effect_videos()
+                if hasattr(step3_provider, "list_effect_videos")
                 else sorted(config.EFFECTS_DIR.glob("*.mp4"))
             )
             effects = [item for item in effects if item.name != "effect_off.mp4"]
@@ -3039,7 +2756,7 @@ def render_effect_wizard_step():
                 st.warning("Chưa có hiệu ứng trong thư viện.")
                 if st.button("Tạo thư viện hiệu ứng mẫu", type="primary", use_container_width=True):
                     with st.spinner("Đang tạo hiệu ứng mẫu..."):
-                        step3_effect_provider.create_builtin_effect_pack()
+                        step3_provider.create_builtin_effect_pack()
                     st.rerun()
             else:
                 current_name = Path(st.session_state.effect_path).name if st.session_state.get("effect_path") else effects[0].name
@@ -3052,30 +2769,47 @@ def render_effect_wizard_step():
                 metadata = _auto_analyze_selected_effect(selected_effect)
 
                 pixabay_api_key, key_source = _resolve_pixabay_api_key()
-                tab_suggest, tab_adjust, tab_library, tab_text = st.tabs(["✨ Đề xuất", "🎛️ Điều chỉnh", "📚 Thư viện", "📝 Chữ động"])
+                tab_suggest, tab_adjust, tab_library, tab_typography, tab_subtitle = st.tabs([
+                    "AI gợi ý",
+                    "Điều chỉnh / Xóa phông",
+                    "Thư viện",
+                    "Chữ nghệ thuật",
+                    "Tạo phụ đề",
+                ])
                 with tab_suggest:
                     _render_suggest_tab(pixabay_api_key)
                 with tab_adjust:
                     _render_adjust_tab(selected_effect, metadata)
                 with tab_library:
                     _render_library_tab(effects, selected_effect, pixabay_api_key, key_source, manifest_summary, image_value)
-                with tab_text:
-                    _render_text_tab()
+                with tab_typography:
+                    _render_typography_controls_inline(project_id, track)
+                with tab_subtitle:
+                    _render_subtitle_controls_inline(
+                        project_id, track, audio_file, subtitle_duration, subtitle_manifest
+                    )
 
-        if st.button("← Quay lại phụ đề", use_container_width=True):
-            _go_to_step(3)
+        if st.button("← Quay lại nhạc & ảnh", use_container_width=True):
+            _go_to_step(4)  # -> Tạo ảnh nền
 
     with preview_col:
-        st.markdown("<div class='sticky-effect-preview-anchor'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='effect-liveview-top-anchor'></div>", unsafe_allow_html=True)
+        st.markdown("#### Live Preview")
         if not enabled:
-            st.image(str(image_value), use_container_width=True)
-            st.caption("Xem trước không hiệu ứng")
+            typography_preview = st.session_state.get("effect_preview_path")
+            if typography_preview and Path(typography_preview).is_file():
+                st.video(str(typography_preview), autoplay=False, loop=True, muted=True)
+                st.caption("Preview FFmpeg có chữ nghệ thuật, không có hiệu ứng overlay")
+            else:
+                st.image(str(image_value), use_container_width=True)
+                st.caption("Chưa có preview chữ. Mở tab Chữ nghệ thuật và bấm Tạo preview chữ 10 giây.")
         elif selected_effect and selected_effect.exists():
             import hashlib
             from core.effects.compositor import effect_settings_cache_key
             image_path = Path(image_value)
             effect_settings = _current_effect_settings(metadata)
-            st.markdown("#### Live Preview")
+            st.markdown("#### Live Preview hiệu ứng")
+            st.caption("Khung này chỉ xem chuyển động và overlay. Chữ nghệ thuật hiển thị trong preview FFmpeg bên dưới.")
             try:
                 effect_live_preview(
                     image_path,
@@ -3102,7 +2836,7 @@ def render_effect_wizard_step():
                 f"{EFFECT_TYPE_LABELS.get(effect_settings['effect_type'], '?')} · "
                 f"opacity {effect_settings['opacity']:.0%} · speed {effect_settings['speed']:.2g}x"
             )
-            source_metadata = step3_effect_provider.get_effect_metadata(selected_effect)
+            source_metadata = step3_provider.get_effect_metadata(selected_effect)
             provider_name = str(source_metadata.get("provider") or "built-in").title()
             license_name = str(source_metadata.get("license_name") or "Chưa có metadata giấy phép")
             st.caption(f"Nguồn: {provider_name} · {selected_effect.stem} · {license_name}")
@@ -3122,7 +2856,7 @@ def render_effect_wizard_step():
                 pass
 
             preview_key = (
-                f"motion-v10-compositor|{st.session_state.get('motion_mode', 'smooth_zoom')}|"
+                f"motion-v11-duration-fix|{st.session_state.get('motion_mode', 'smooth_zoom')}|"
                 f"{image_path.resolve()}|{selected_effect.resolve()}|"
                 f"{effect_settings_cache_key(effect_settings)}|"
                 f"{text_profile_cache_key(st.session_state.get('text_profile'))}|"
@@ -3147,6 +2881,13 @@ def render_effect_wizard_step():
                     result_path = Path(result).resolve()
                     if not result_path.is_file() or result_path.stat().st_size < 1024:
                         raise RuntimeError("File preview không tồn tại hoặc quá nhỏ.")
+                    from core.media.probe import MediaProbe
+                    actual_duration = float(MediaProbe.probe_media(result_path)["duration_seconds"])
+                    if abs(actual_duration - 10.0) > 0.35:
+                        result_path.unlink(missing_ok=True)
+                        raise RuntimeError(
+                            f"Preview sai thời lượng: yêu cầu 10.00s, nhận {actual_duration:.2f}s."
+                        )
                     st.session_state.effect_preview_path = str(result_path)
                     st.session_state.effect_preview_key = preview_key
                     cached = st.session_state.effect_preview_path
@@ -3166,12 +2907,19 @@ def render_effect_wizard_step():
                 unsafe_allow_html=True,
             )
 
-        if st.button("Tiếp tục render →", type="primary", use_container_width=True):
+        if st.button("Lưu và tiếp tục Render →", type="primary", use_container_width=True):
             try:
+                step3_provider.save_project_subtitles(project_id, subtitle_manifest)
+                if subtitle_manifest.get("lyrics"):
+                    step3_provider.generate_subtitles_file(
+                        project_id,
+                        subtitle_manifest["lyrics"],
+                        subtitle_manifest.get("style") or {},
+                    )
                 save_persisted_app_state()
-            except Exception:
-                pass
-            _go_to_step(5)
+            except Exception as exc:
+                st.warning(f"Chưa xuất được file phụ đề, các thiết lập khác vẫn được giữ: {exc}")
+            _go_to_step(6)  # -> Render video
 
 def _path_exists(value) -> bool:
     try:
@@ -3227,7 +2975,7 @@ def render_final_wizard_step():
         missing = "nhạc" if not track else "ảnh nền"
         st.error(f"Chưa có {missing}.")
         if st.button("← Quay lại", use_container_width=True):
-            _go_to_step(2 if not track else 3)
+            _go_to_step(2 if not track else 4)  # -> nhạc / ảnh nền
         st.stop()
 
     if not effect_enabled:
@@ -3303,8 +3051,8 @@ def render_final_wizard_step():
                 use_container_width=True,
                 disabled=bool(issues),
             )
-            if st.button("← Hiệu ứng", use_container_width=True):
-                _go_to_step(5)
+            if st.button("← Hiệu ứng & chữ", use_container_width=True):
+                _go_to_step(5)  # -> Hiệu ứng & Chữ
 
         progress_box = st.container(border=True)
         with progress_box:
@@ -3332,93 +3080,174 @@ def render_final_wizard_step():
                     save_persisted_app_state()
                 except Exception:
                     pass
-                _go_to_step(7)
-        elif st.session_state.get("effect_preview_path") and Path(st.session_state.effect_preview_path).exists():
-            preview_slot.video(str(st.session_state.effect_preview_path), autoplay=True, loop=True, muted=True)
-            st.caption("Preview đầu ra")
+                _go_to_step(7)  # -> Upload YouTube
         else:
-            preview_slot.image(str(image_path), use_container_width=True)
-            st.caption("Khung hình đầu ra")
+            try:
+                from step3_provider import load_project_subtitles
+                manifest = load_project_subtitles(st.session_state.get("project_id", "lofi_default_prj"))
+                lyrics = manifest.get("lyrics")
+                style = manifest.get("style")
+            except Exception:
+                lyrics = None
+                style = None
+            
+            try:
+                from components.effect_live_preview import effect_live_preview
+                # Truyền ĐỦ thông số compositing như Live View ở bước Hiệu ứng.
+                # Trước đây thiếu -> component dùng mặc định screen_black/blend screen:
+                # video phông xanh không được key nền, cả khung bị ám xanh.
+                live_settings = _current_effect_settings()
+                effect_live_preview(
+                    image_path=Path(image_path),
+                    effect_path=Path(effect_path),
+                    opacity=live_settings["opacity"],
+                    speed=live_settings["speed"],
+                    blend_mode=live_settings["blend_mode"] if live_settings["blend_mode"] != "normal" else ("normal" if live_settings["effect_type"] in ("alpha", "normal") else "screen"),
+                    motion_mode=st.session_state.get("motion_mode", "smooth_zoom"),
+                    effect_type=live_settings["effect_type"],
+                    key_color=live_settings["key_color"],
+                    chroma_similarity=live_settings["chroma_similarity"],
+                    chroma_softness=live_settings["chroma_softness"],
+                    despill=live_settings["despill"],
+                    quality="fast",
+                    text_profile=st.session_state.get("text_profile"),
+                    audio_path=audio_file if audio_file.is_file() else None,
+                    lyrics=lyrics,
+                    subtitle_style=style,
+                    height=420,
+                )
+            except Exception as exc:
+                preview_slot.image(str(image_path), use_container_width=True)
+                st.caption(f"Lỗi nạp live preview: {exc}")
 
-    if render_button:
+    # --- Render chạy ở THREAD NỀN, main thread chỉ vẽ UI theo trạng thái chia sẻ ---
+    # Lý do (2 lỗi cũ): (1) run_step4 gọi callback tiến độ từ worker thread, Streamlit
+    # bỏ qua lệnh vẽ từ thread thiếu ScriptRunContext -> thanh tiến độ và đồng hồ
+    # "Đã chạy" đứng im suốt giai đoạn dựng hình; (2) render chạy trên main thread nên
+    # người dùng bấm bất kỳ widget nào là Streamlit rerun và HỦY render giữa chừng.
+    # Nay: thread nền chỉ ghi vào job_state (dict, an toàn nhờ GIL); vòng lặp main
+    # thread vẽ UI mỗi 0.5s; rerun không giết render — lần chạy script sau tự gắn lại.
+    import threading
+
+    if render_button and not st.session_state.get("render_job"):
         st.session_state.final_video_path = None
-        started_at = time.monotonic()
-        last_percent = 0.0
-        eta_smoothed = None
-        last_eta_update = started_at
+
+        job_state = {
+            "percent": 0.0, "stage": "Chuẩn bị nguyên liệu", "renderer_eta": None,
+            "done": False, "error": None, "result": None,
+            "started_at": time.monotonic(),
+        }
 
         def update_progress(percent, stage="Đang xử lý", renderer_eta=None):
-            nonlocal last_percent, eta_smoothed, last_eta_update
-            percent = max(last_percent, min(float(percent), 1.0))
-            last_percent = percent
-            now = time.monotonic()
-            elapsed = now - started_at
+            # Được gọi từ thread render (kể cả worker con) — chỉ ghi trạng thái, KHÔNG st.*
+            job_state["percent"] = max(job_state["percent"], min(float(percent), 1.0))
+            job_state["stage"] = str(stage)
+            job_state["renderer_eta"] = renderer_eta
 
-            # FFmpeg gửi tiến độ media thật mỗi ~0.35 giây. ETA tổng được tính theo
-            # tốc độ hoàn thành thực tế, sau đó làm mượt EMA để tránh nhảy số.
+        config.VIDEO_DURATION_SECONDS = target_duration
+        # Đường dẫn tương đối (vd "Downloads") neo vào thư mục project thay vì CWD
+        # của tiến trình Streamlit, để video cuối không rơi vào chỗ khó tìm.
+        _out_dir = Path(output_dir).expanduser()
+        if not _out_dir.is_absolute():
+            _out_dir = Path(config.BASE_DIR) / _out_dir
+        config.OUTPUT_DIR = _out_dir
+        config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # HM4: remix âm thanh nếu người dùng bật ở bước Chỉnh âm.
+        remix_settings = st.session_state.get("remix_settings") if st.session_state.get("remix_enabled") else None
+        # HM5: danh sách bài để mix (nối) — nếu có >1 thì video dài theo tổng.
+        mix_paths = [p for p in (st.session_state.get("mix_audio_paths") or []) if Path(p).is_file()]
+        audio_paths = mix_paths if len(mix_paths) > 1 else None
+
+        render_kwargs = dict(
+            project_id=st.session_state.get("project_id", "lofi_default_prj"),
+            audio_path=audio_file,
+            image_path=Path(image_path),
+            effect_path=Path(effect_path),
+            segment_duration=min(60.0, float(target_duration)),
+            encoder=selected_encoder,
+            progress_callback=update_progress,
+            vibe_mode="clean",
+            motion_mode=motion_mode,
+            effect_settings=_current_effect_settings() if effect_enabled else None,
+            text_profile=st.session_state.get("text_profile"),
+            remix_settings=remix_settings,
+            audio_paths=audio_paths,
+        )
+        selected_track_for_job = track
+
+        def _render_worker():
+            try:
+                if not audio_file.exists():
+                    job_state["stage"] = "Đang tải nhạc"
+                    step1_music_hunter.download_track(
+                        selected_track_for_job,
+                        project_id=render_kwargs["project_id"],
+                    )
+                if not audio_file.exists():
+                    raise FileNotFoundError(f"Không tạo được file nhạc: {audio_file}")
+                final_video = Path(step4_render.run_step4(**render_kwargs))
+                if not final_video.exists() or final_video.stat().st_size < 1024:
+                    raise RuntimeError("Renderer kết thúc nhưng video đầu ra không hợp lệ.")
+                job_state["result"] = str(final_video.resolve())
+                job_state["percent"] = 1.0
+                job_state["stage"] = "Hoàn thành"
+            except Exception as exc:
+                job_state["error"] = str(exc) or repr(exc)
+            finally:
+                job_state["done"] = True
+
+        threading.Thread(target=_render_worker, daemon=True, name="lofi_render_worker").start()
+        st.session_state.render_job = {
+            "state": job_state,
+            "eta_smoothed": None,
+            "context": (
+                f"Audio: {audio_file}\nImage: {image_path}\nEffect: {effect_path}\n"
+                f"Output: {output_dir}\nDuration: {target_duration}s\n"
+                f"Renderer: {getattr(step4_render, '__file__', 'unknown')}"
+            ),
+        }
+
+    job = st.session_state.get("render_job")
+    if job:
+        job_state = job["state"]
+        # Vòng vẽ UI ở MAIN thread: đồng hồ "Đã chạy" đếm theo thời gian thật mỗi 0.5s,
+        # ETA tính lại liên tục (kể cả các giai đoạn không có tiến độ chi tiết như audio)
+        # rồi làm mượt EMA để không nhảy số.
+        while not job_state["done"]:
+            elapsed = time.monotonic() - job_state["started_at"]
+            percent = job_state["percent"]
             raw_eta = (elapsed / percent) * (1.0 - percent) if percent >= 0.05 else None
+            renderer_eta = job_state.get("renderer_eta")
             if renderer_eta is not None and 0.05 <= percent <= 0.70:
-                # ETA segment thật chỉ là phần dựng hình; cộng phần hậu kỳ ước lượng từ tiến độ tổng.
+                # ETA dựng hình thật từ FFmpeg; cộng phần hậu kỳ ước lượng theo thời gian đã chạy.
                 raw_eta = max(float(renderer_eta), 0.0) + max(elapsed * 0.18, 2.0)
-            if raw_eta is not None and now - last_eta_update >= 0.3:
-                eta_smoothed = raw_eta if eta_smoothed is None else 0.22 * raw_eta + 0.78 * eta_smoothed
-                last_eta_update = now
-
+            if raw_eta is not None:
+                prev = job.get("eta_smoothed")
+                job["eta_smoothed"] = raw_eta if prev is None else 0.22 * raw_eta + 0.78 * prev
             timeline.progress(int(percent * 100), text=f"{int(percent * 100)}%")
-            stage_text.markdown(f"**{stage}**")
+            stage_text.markdown(f"**{job_state['stage']}**")
             elapsed_metric.metric("Đã chạy", _format_eta(elapsed))
-            eta_metric.metric("Còn lại", _format_eta(eta_smoothed))
+            eta_metric.metric("Còn lại", _format_eta(job.get("eta_smoothed")))
+            time.sleep(0.5)
 
-        try:
-            stage_text.markdown("**Chuẩn bị nguyên liệu**")
-            timeline.progress(0, text="Đang chuẩn bị")
-            if not audio_file.exists():
-                stage_text.markdown("**Đang tải nhạc**")
-                step1_music_hunter.download_track(
-                    track,
-                    project_id=st.session_state.get("project_id"),
-                )
-            if not audio_file.exists():
-                raise FileNotFoundError(f"Không tạo được file nhạc: {audio_file}")
-
-            config.VIDEO_DURATION_SECONDS = target_duration
-            config.OUTPUT_DIR = Path(output_dir)
-            config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-            final_video = step4_render.run_step4(
-                project_id=st.session_state.get("project_id", "lofi_default_prj"),
-                audio_path=audio_file,
-                image_path=Path(image_path),
-                effect_path=Path(effect_path),
-                segment_duration=min(60.0, float(target_duration)),
-                encoder=selected_encoder,
-                progress_callback=update_progress,
-                vibe_mode="clean",
-                motion_mode=motion_mode,
-                effect_settings=_current_effect_settings() if effect_enabled else None,
-                text_profile=st.session_state.get("text_profile"),
-            )
-            final_video = Path(final_video)
-            if not final_video.exists() or final_video.stat().st_size < 1024:
-                raise RuntimeError("Renderer kết thúc nhưng video đầu ra không hợp lệ.")
-
-            st.session_state.final_video_path = str(final_video.resolve())
-            update_progress(1.0, "Hoàn thành")
+        elapsed = time.monotonic() - job_state["started_at"]
+        elapsed_metric.metric("Đã chạy", _format_eta(elapsed))
+        if job_state["error"]:
+            st.session_state.render_job = None
+            stage_text.markdown("**Render thất bại**")
+            eta_metric.metric("Còn lại", "Đã dừng")
+            status_note.error(job_state["error"])
+            with settings.expander("Chi tiết lỗi", expanded=False):
+                st.code(f"{job['context']}\nError: {job_state['error']}", language="text")
+        else:
+            st.session_state.render_job = None
+            st.session_state.final_video_path = job_state["result"]
+            timeline.progress(100, text="100%")
+            stage_text.markdown("**Hoàn thành**")
+            eta_metric.metric("Còn lại", "0 giây")
             save_persisted_app_state()
             st.rerun()
-        except Exception as exc:
-            elapsed = time.monotonic() - started_at
-            stage_text.markdown("**Render thất bại**")
-            elapsed_metric.metric("Đã chạy", _format_eta(elapsed))
-            eta_metric.metric("Còn lại", "Đã dừng")
-            status_note.error(str(exc))
-            with settings.expander("Chi tiết lỗi", expanded=False):
-                st.code(
-                    f"Audio: {audio_file}\nImage: {image_path}\nEffect: {effect_path}\n"
-                    f"Output: {output_dir}\nDuration: {target_duration}s\n"
-                    f"Renderer: {getattr(step4_render, '__file__', 'unknown')}\nError: {exc}",
-                    language="text",
-                )
 
 def _video_duration_seconds(video_path) -> float:
     """Đọc thời lượng video cuối; lỗi thì dùng cấu hình mặc định."""
@@ -3439,7 +3268,7 @@ def render_upload_wizard_step():
     if not final_path or not Path(final_path).exists():
         st.error("Chưa có video render hoàn tất. Hãy render video ở bước trước.")
         if st.button("← Quay lại render", use_container_width=True):
-            _go_to_step(6)
+            _go_to_step(6)  # -> Render video
         st.stop()
 
     track = st.session_state.get("selected_track") or {}
@@ -3615,7 +3444,104 @@ def render_upload_wizard_step():
                 st.error(f"Upload thất bại: {exc}")
 
         if st.button("← Quay lại render", use_container_width=True):
-            _go_to_step(6)
+            _go_to_step(6)  # -> Render video
+
+
+def render_remix_wizard_step():
+    """Bước Chỉnh âm / Remix (HM4) + chế độ mix nhiều bài thành video dài (HM5)."""
+    from core.media.audio_processor import AudioProcessor
+
+    st.markdown("## 🎚️ Chỉnh âm / Remix")
+    track = st.session_state.get("selected_track")
+    if not track:
+        st.warning("Hãy chọn nhạc trước.")
+        if st.button("← Chọn nhạc", use_container_width=True):
+            _go_to_step(2)
+        st.stop()
+
+    track_id = str(track.get("track_id") or "")
+    audio_file = config.INPUT_AUDIO_DIR / f"{track_id}.m4a"
+
+    st.caption("Tinh chỉnh chất âm: tempo, cao độ, EQ, độ vang. Tắt để dùng chất âm lofi mặc định (slowed + lowpass ấm).")
+    remix_enabled = st.checkbox(
+        "Bật chỉnh âm / remix", value=bool(st.session_state.get("remix_enabled", False)), key="remix_enabled_cb"
+    )
+    st.session_state["remix_enabled"] = remix_enabled
+
+    cur = dict(st.session_state.get("remix_settings") or {})
+    if remix_enabled:
+        c1, c2 = st.columns(2)
+        with c1:
+            tempo = st.slider("Tempo (nhanh/chậm, GIỮ cao độ)", 0.5, 2.0, float(cur.get("tempo", 1.0)), 0.01, key="remix_tempo")
+            pitch = st.slider("Cao độ (nửa cung)", -12, 12, int(cur.get("pitch_semitones", 0)), 1, key="remix_pitch")
+            reverb = st.slider("Độ vang (reverb)", 0.0, 1.0, float(cur.get("reverb", 0.0)), 0.05, key="remix_reverb")
+        with c2:
+            bass = st.slider("Bass (dB)", -15.0, 15.0, float(cur.get("bass_gain", 0.0)), 0.5, key="remix_bass")
+            treble = st.slider("Treble (dB)", -15.0, 15.0, float(cur.get("treble_gain", 0.0)), 0.5, key="remix_treble")
+            lowpass = st.slider("Lowpass (Hz, 0 = tắt)", 0, 20000, int(cur.get("lowpass_hz", 0)), 500, key="remix_lowpass")
+        cc1, cc2 = st.columns(2)
+        compress = cc1.checkbox("Nén động (compressor)", value=bool(cur.get("compress", True)), key="remix_compress")
+        normalize = cc2.checkbox("Chuẩn hóa âm lượng", value=bool(cur.get("normalize", True)), key="remix_normalize")
+        settings = {
+            "tempo": tempo, "pitch_semitones": pitch, "reverb": reverb,
+            "bass_gain": bass, "treble_gain": treble, "lowpass_hz": lowpass,
+            "compress": compress, "normalize": normalize,
+        }
+        st.session_state["remix_settings"] = settings
+
+        if audio_file.exists():
+            if st.button("🎧 Nghe thử 20 giây", use_container_width=True):
+                try:
+                    import subprocess as _sp
+                    prev_dir = config.CACHE_DIR / "previews" / "remix"
+                    prev_dir.mkdir(parents=True, exist_ok=True)
+                    slice_p = prev_dir / "remix_slice.m4a"
+                    out_p = prev_dir / "remix_preview.m4a"
+                    _sp.run(["ffmpeg", "-y", "-v", "error", "-i", str(audio_file), "-t", "20",
+                             "-c:a", "aac", str(slice_p)], check=True)
+                    AudioProcessor.apply_remix(slice_p, out_p, settings)
+                    st.session_state["remix_preview_path"] = str(out_p)
+                except Exception as exc:
+                    st.error(f"Không tạo được bản nghe thử: {exc}")
+        else:
+            st.info("Chưa có file nhạc đã tải để nghe thử; vẫn lưu thiết lập cho lúc render.")
+        prev = st.session_state.get("remix_preview_path")
+        if prev and Path(prev).exists():
+            st.audio(prev)
+    else:
+        st.info("Đang tắt — dùng chất âm lofi mặc định.")
+
+    # HM5: mix nhiều bài thành video dài
+    with st.expander("🎶 Mix nhiều bài thành video dài", expanded=bool(st.session_state.get("mix_audio_paths"))):
+        st.caption("Chọn nhiều bài đã tải để nối (crossfade) thành audio dài. Thời lượng video sẽ theo TỔNG các bài.")
+        available = sorted(config.INPUT_AUDIO_DIR.glob("*.m4a")) if config.INPUT_AUDIO_DIR.exists() else []
+        options = [str(p) for p in available]
+        labels = {str(p): p.stem for p in available}
+        default = [p for p in (st.session_state.get("mix_audio_paths") or []) if p in options]
+        if not default and str(audio_file) in options:
+            default = [str(audio_file)]
+        chosen = st.multiselect(
+            "Bài để nối (theo thứ tự danh sách)", options, default=default,
+            format_func=lambda p: labels.get(p, Path(p).name), key="mix_multiselect",
+        )
+        st.session_state["mix_audio_paths"] = chosen
+        if len(chosen) > 1:
+            st.success(f"Sẽ nối {len(chosen)} bài thành 1 video dài (thời lượng theo tổng).")
+        else:
+            st.caption("Chọn từ 2 bài trở lên để bật chế độ mix. Ít hơn = dùng 1 bài như thường.")
+
+    st.divider()
+    nav1, nav2 = st.columns(2)
+    with nav1:
+        if st.button("← Quay lại nhạc", use_container_width=True):
+            _go_to_step(2)
+    with nav2:
+        if st.button("Tiếp tục → Tạo ảnh nền", type="primary", use_container_width=True):
+            try:
+                save_persisted_app_state()
+            except Exception:
+                pass
+            _go_to_step(4)
 
 
 def render_sd_setup_step():
@@ -3825,6 +3751,7 @@ try:
 except Exception as state_error:
     st.sidebar.caption(f"Chưa lưu được tiến trình: {state_error}")
 
+render_workspace_header()
 
 # --- PAGE ROUTING ---
 # Tên ứng dụng và tiến trình đã có ở sidebar, không lặp lại trong nội dung.
@@ -3832,22 +3759,20 @@ if st.session_state.get("current_step") == 1:
     render_sd_setup_step()
     st.stop()
 
-
 if st.session_state.get("current_step") == 2:
     render_music_wizard_step()
     st.stop()
 
-
 if st.session_state.get("current_step") == 3:
-    render_image_wizard_step()
+    render_remix_wizard_step()
     st.stop()
 
 if st.session_state.get("current_step") == 4:
-    render_effect_wizard_step()
+    render_image_wizard_step()
     st.stop()
 
 if st.session_state.get("current_step") == 5:
-    render_subtitle_wizard_step_simple()
+    render_effect_wizard_step()
     st.stop()
 
 if st.session_state.get("current_step") == 6:

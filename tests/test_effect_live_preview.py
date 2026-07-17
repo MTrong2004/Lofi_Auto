@@ -1,3 +1,20 @@
+"""
+AI FILE NOTE - TEST EFFECT LIVE PREVIEW
+Chức năng chính:
+- Unit test (pytest) cho hàm _text_payload trong components.effect_live_preview.
+- Kiểm tra payload trả về giữ đầy đủ các trường hoạt ảnh chữ (intro/hold/outro effect và duration).
+Đầu vào chính:
+- Dict profile text mẫu (enabled, content, position, màu, font, intro/hold/outro_effect, duration...).
+Đầu ra chính:
+- Kết quả assert pass/fail của pytest (không sinh file).
+API được file khác sử dụng:
+- Không (đây là file test, được pytest thu thập tự động qua tên test_*).
+Phụ thuộc quan trọng:
+- components.effect_live_preview._text_payload; chạy bằng pytest.
+Lưu ý khi sửa:
+- Đồng bộ tên khóa camelCase trong payload (introEffect, holdEffect, outroEffect, introDuration, outroDuration)
+  với đầu ra thực tế của _text_payload; lệch tên là test đỏ.
+"""
 from components.effect_live_preview import _text_payload
 
 

@@ -1,6 +1,21 @@
 """
-Output Verifier Module.
-Validates the structural integrity of final output videos, matches specifications, and generates secure output manifests.
+AI FILE NOTE - OUTPUT VERIFIER
+Chức năng chính:
+- Xác minh toàn diện video đầu ra cuối cùng: kiểm tra có đủ luồng hình/tiếng, độ phân giải 1920x1080, frame rate CFR, codec h264 + aac 48kHz, thời lượng khớp trong sai số 1 frame (các mã RND-ACC-001..004).
+- Cảnh báo (WARN) khi phát hiện đoạn màn hình đen (>3s) qua blackdetect và đoạn im lặng dài (>5s).
+- Sinh output manifest bảo mật (kèm SHA-256, thông tin encoder/màu/color) và xác thực bằng schema trước khi ghi cạnh video.
+Đầu vào chính:
+- video_path, project_id, expected_duration, thông tin encoder yêu cầu/thực tế, track_id.
+Đầu ra chính:
+- dict manifest và file <stem>_manifest.json; quăng OutputVerificationError nếu không đạt.
+API được file khác sử dụng:
+- OutputVerifier.verify_video, OutputVerifier.detect_black_frames, OutputVerificationError.
+Phụ thuộc quan trọng:
+- config, FFmpeg/ffprobe (subprocess), core.media.probe (MediaProbe), core.runtime.schemas (validate_data_schema), core.runtime.cache_manager (CacheManager).
+Lưu ý khi sửa:
+- Các ngưỡng 1920x1080 / VIDEO_FPS / AUDIO_SAMPLE_RATE / h264 / aac là ràng buộc nghiệm thu; đổi phải đồng bộ với config và schema output_manifest.
+- detect_black_frames nuốt lỗi và trả list rỗng (chỉ là cảnh báo), không được để nó làm hỏng verify chính.
+- Khối __main__ chỉ tự sinh video test bằng FFmpeg để chạy thử.
 """
 import os
 import sys

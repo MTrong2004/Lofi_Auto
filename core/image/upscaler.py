@@ -1,6 +1,20 @@
 """
-Image Upscaler Module.
-Upscales input images to Full HD (1920x1080) using Stable Diffusion Local WebUI extra single-image endpoint, with a PIL Lanczos fallback.
+AI FILE NOTE - IMAGE UPSCALER
+Chức năng chính:
+- Phóng to ảnh lên chuẩn Full HD 1920x1080.
+- Ưu tiên AI Upscale qua endpoint /sdapi/v1/extra-single-image của SD Local WebUI (bộ lọc mặc định R-ESRGAN 4x+).
+- Fallback dùng FFmpeg scale Lanczos 1920x1080 khi không có/lỗi WebUI.
+Đầu vào chính:
+- input_path (Path ảnh gốc), output_path (Path), api_url tùy chọn, upscaler_name, scale_factor (mặc định 2.0).
+Đầu ra chính:
+- File ảnh đã upscale tại output_path; trả dict metadata {upscale_method, scale_factor, success, error_detail}.
+API được file khác sử dụng:
+- Lớp ImageUpscaler.upscale_image(); exception ImageUpscaleError.
+Phụ thuộc quan trọng:
+- requests (gọi WebUI), ffmpeg (qua subprocess), base64, logging.
+Lưu ý khi sửa:
+- FFmpeg là fallback bắt buộc; nếu cả AI lẫn Lanczos thất bại thì ném ImageUpscaleError.
+- Máy không GPU sẽ dựa vào fallback FFmpeg; giữ nhánh này hoạt động ổn định.
 """
 import os
 import sys

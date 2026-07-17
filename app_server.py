@@ -1,3 +1,22 @@
+"""
+AI FILE NOTE - APP_SERVER (FASTAPI BACKEND)
+Chức năng chính:
+- Backend REST API (FastAPI) cho frontend React/UI ngoài Streamlit; chạy tại 127.0.0.1:8000.
+- Cung cấp endpoint: đọc/ghi settings, kiểm tra hệ thống, điều khiển Stable Diffusion local (status/models/set-model/control), tìm/stream/tải nhạc, sinh + upscale ảnh, liệt kê hiệu ứng, render video chạy nền và theo dõi tiến độ.
+- Phục vụ file tĩnh media từ thư mục data/ qua mount "/static".
+Đầu vào chính:
+- HTTP request với payload Pydantic (SDControlPayload, MusicSearchPayload, RenderPayload, SettingsPayload, ...).
+- File settings.json trong data/config.
+Đầu ra chính:
+- JSON response cho từng endpoint; file video kết quả (render nền); file settings.json.
+API được file khác sử dụng:
+- Là script chạy trực tiếp (uvicorn.run ở __main__). Đối tượng `app` (FastAPI) và các route @app.* là điểm truy cập chính; không được import như thư viện.
+Phụ thuộc quan trọng:
+- config, step1_music_hunter, step2_image_provider, step4_render, system_check, core.image.sd_manager.SDProcessManager, core.image.upscaler.ImageUpscaler; ngoài: fastapi, pydantic, uvicorn, requests, yt_dlp.
+Lưu ý khi sửa:
+- `render_state` là biến toàn cục dùng chung cho tiến trình render nền; chỉ cho phép một render chạy tại một thời điểm (kiểm tra status == "rendering").
+- Render chạy qua BackgroundTasks nên lỗi được nuốt vào render_state["error"], không raise ra client.
+"""
 import os
 import sys
 import json
@@ -79,7 +98,7 @@ class SettingsPayload(BaseModel):
     vibe_mode: Optional[str] = "clean"
     duration: Optional[int] = 10
 
-SETTINGS_FILE = config.BASE_DIR / "data" / "settings.json"
+SETTINGS_FILE = getattr(config, "SETTINGS_FILE", config.BASE_DIR / "data" / "config" / "settings.json")
 
 def _load_settings() -> dict:
     """Đọc settings từ file JSON, trả về dict mặc định nếu chưa có."""

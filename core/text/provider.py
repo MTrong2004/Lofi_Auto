@@ -50,14 +50,19 @@ _FONTS_DIR = Path(config.BASE_DIR) / "data" / "fonts"
 # Mỗi ứng viên: (family_name, tên_file_hệ_thống_để_kiểm_tra_tồn_tại).
 # Family đầu tiên có file khớp (trong data/fonts hoặc C:/Windows/Fonts) sẽ được chọn.
 _SYSTEM_FONTS_DIR = Path("C:/Windows/Fonts")
+# Ứng viên bundle (OFL, trong data/fonts) đặt TRƯỚC font hệ thống để chữ đẹp/nhất quán.
+# Be Vietnam Pro: sans hiện đại phủ đủ dấu tiếng Việt. Noto Serif SC: serif cổ phong phủ Hán.
 _FONT_CANDIDATES: dict[tuple[str, str], list[tuple[str, str]]] = {
-    ("sans", "latin"): [("Segoe UI", "segoeui.ttf"), ("Arial", "arial.ttf"), ("Tahoma", "tahoma.ttf")],
+    ("sans", "latin"): [("Be Vietnam Pro", "BeVietnamPro-Regular.ttf"),
+                        ("Segoe UI", "segoeui.ttf"), ("Arial", "arial.ttf"), ("Tahoma", "tahoma.ttf")],
     ("serif", "latin"): [("Times New Roman", "times.ttf"), ("Georgia", "georgia.ttf"), ("Arial", "arial.ttf")],
-    ("display", "latin"): [("Arial Black", "ariblk.ttf"), ("Segoe UI", "segoeui.ttf"), ("Arial", "arial.ttf")],
-    # CJK: YaHei phủ cả Latin + Hán giản thể; SimSun/MingLiU phủ phồn thể.
+    ("display", "latin"): [("Be Vietnam Pro SemiBold", "BeVietnamPro-SemiBold.ttf"),
+                          ("Arial Black", "ariblk.ttf"), ("Segoe UI", "segoeui.ttf"), ("Arial", "arial.ttf")],
+    # CJK: Noto Serif SC (bundle) cho cổ phong; YaHei/SimSun/MingLiU là fallback hệ thống.
     ("sans", "cjk"): [("Microsoft YaHei", "msyh.ttc"), ("SimSun", "simsun.ttc"), ("MingLiU", "mingliub.ttc")],
-    ("serif", "cjk"): [("SimSun", "simsun.ttc"), ("Microsoft YaHei", "msyh.ttc"), ("MingLiU", "mingliub.ttc")],
-    ("display", "cjk"): [("Microsoft YaHei", "msyh.ttc"), ("SimSun", "simsun.ttc")],
+    ("serif", "cjk"): [("Noto Serif SC", "NotoSerifSC.ttf"),
+                      ("SimSun", "simsun.ttc"), ("Microsoft YaHei", "msyh.ttc"), ("MingLiU", "mingliub.ttc")],
+    ("display", "cjk"): [("Noto Serif SC", "NotoSerifSC.ttf"), ("Microsoft YaHei", "msyh.ttc"), ("SimSun", "simsun.ttc")],
 }
 _FALLBACK_FAMILY = "Arial"
 
@@ -115,7 +120,12 @@ def default_text_profile() -> dict[str, Any]:
     return {
         "enabled": True,
         "content": "",
-        "content_type": "track_title",
+        "secondary_text": "",
+        "content_type": "custom",
+        "design_goal": "decorative_video_typography",
+        "writing_direction": "vertical",
+        "visual_anchor": "beside_character",
+        "avoid_subject": True,
         "preset": "minimal",
         "font_style": "sans",
         "position": "bottom_center",
@@ -124,6 +134,11 @@ def default_text_profile() -> dict[str, Any]:
         "outline_width": 2.0,
         "font_size": 72,
         "bold": True,
+        "letter_spacing": 0.0,
+        # Con dấu đỏ (kiểu bìa nhạc Hoa ngữ) — chỉ vẽ khi bật + có nội dung.
+        "seal_enabled": False,
+        "seal_text": "",
+        "seal_color": "#B23A2E",
         "intro_effect": "fade",
         "hold_effect": "soft_glow",
         "outro_effect": "fade",
@@ -166,6 +181,12 @@ def normalize_text_profile(raw: dict[str, Any] | None) -> dict[str, Any]:
     position = str(data.get("position") or base["position"]).lower()
     if position not in POSITIONS:
         position = base["position"]
+    writing_direction = str(data.get("writing_direction") or base["writing_direction"]).lower()
+    if writing_direction not in ("vertical", "horizontal"):
+        writing_direction = base["writing_direction"]
+    visual_anchor = str(data.get("visual_anchor") or base["visual_anchor"]).lower()
+    if visual_anchor not in ("beside_character", "negative_space", "free"):
+        visual_anchor = base["visual_anchor"]
     intro = str(data.get("intro_effect") or base["intro_effect"]).lower()
     if intro not in INTRO_EFFECTS:
         intro = base["intro_effect"]
@@ -184,8 +205,13 @@ def normalize_text_profile(raw: dict[str, Any] | None) -> dict[str, Any]:
 
     return {
         "enabled": bool(data.get("enabled", base["enabled"])),
-        "content": str(data.get("content") or "")[:200],
+        "content": str(data.get("content") or "")[:80],
+        "secondary_text": str(data.get("secondary_text") or "")[:120],
         "content_type": content_type,
+        "design_goal": "decorative_video_typography",
+        "writing_direction": writing_direction,
+        "visual_anchor": visual_anchor,
+        "avoid_subject": bool(data.get("avoid_subject", base["avoid_subject"])),
         "preset": preset,
         "font_style": font_style,
         "position": position,
@@ -194,6 +220,10 @@ def normalize_text_profile(raw: dict[str, Any] | None) -> dict[str, Any]:
         "outline_width": _clamp(data.get("outline_width"), 0.0, 8.0, base["outline_width"]),
         "font_size": int(_clamp(data.get("font_size"), 16, 200, base["font_size"])),
         "bold": bool(data.get("bold", base["bold"])),
+        "letter_spacing": _clamp(data.get("letter_spacing"), 0.0, 40.0, base["letter_spacing"]),
+        "seal_enabled": bool(data.get("seal_enabled", base["seal_enabled"])),
+        "seal_text": str(data.get("seal_text") or "")[:12],
+        "seal_color": _hex(data.get("seal_color"), base["seal_color"]),
         "intro_effect": intro,
         "hold_effect": hold,
         "outro_effect": outro,
@@ -212,8 +242,10 @@ def text_profile_cache_key(profile: dict[str, Any] | None) -> str:
         return "text=off"
     p = normalize_text_profile(profile)
     return (
-        f"text=on|c={p['content']}|pos={p['position']}|fs={p['font_size']}|"
+        f"text=on|c={p['content']}|sub={p['secondary_text']}|dir={p['writing_direction']}|"
+        f"anchor={p['visual_anchor']}|avoid={int(p['avoid_subject'])}|pos={p['position']}|fs={p['font_size']}|"
         f"fst={p['font_style']}|col={p['text_color']}|out={p['outline_color']}:{p['outline_width']:.1f}|"
+        f"spc={p['letter_spacing']:.1f}|seal={int(p['seal_enabled'])}:{p['seal_text']}:{p['seal_color']}|"
         f"in={p['intro_effect']}:{p['intro_duration']:.2f}|hold={p['hold_effect']}|"
         f"out2={p['outro_effect']}:{p['outro_duration']:.2f}|s={p['start_seconds']:.2f}|e={p['end_seconds']}"
     )
@@ -223,16 +255,48 @@ def build_ai_text_profile(track: dict, music_tags: list[str], image_context: str
                            video_duration: float = 3600.0, current: dict | None = None) -> dict:
     """Tạo profile chữ bằng AI; lỗi/tắt thì fallback local. Giữ nội dung người dùng đã nhập."""
     from core.text.effect_recommender import build_text_profile
+    from core.text.typo_presets import resolve_typo_preset, get_preset_layout
+    current_content = str((current or {}).get("content") or "").strip()
+    api_content = content or current_content
     profile = build_text_profile(
-        track, music_tags, image_context, content, video_duration,
+        track, music_tags, image_context, api_content, video_duration,
         api_url=getattr(config, "PROMPT_API_URL", ""),
         api_key=getattr(config, "PROMPT_API_KEY", ""),
         model=getattr(config, "PROMPT_API_MODEL", "openai"),
         timeout=int(getattr(config, "PROMPT_API_TIMEOUT", 40)),
         enabled=bool(getattr(config, "TEXT_EFFECT_AI_ENABLED", True)),
     )
-    normalized = normalize_text_profile(profile)
-    # Giữ nội dung người dùng đã nhập, AI không được ghi đè content.
-    if content:
-        normalized["content"] = content[:200]
+    # Cho phép AI đề xuất cụm chữ khi ô chính đang trống. Nếu người dùng đã nhập, giữ nguyên.
+    merged = dict(current or {})
+    merged.update(profile or {})
+
+    # Áp PRESET TYPO theo thể loại (nhạc Trung -> dọc + con dấu; Việt/Lofi -> layout khác).
+    # Preset quyết định bố cục/màu/hướng để chữ hợp thể loại; nội dung người dùng giữ nguyên ở dưới.
+    style_tags = (track or {}).get("style_tags") or music_tags or []
+    hint_text = " ".join([
+        str((track or {}).get("title") or ""), str((track or {}).get("author") or ""),
+        " ".join(str(t) for t in (music_tags or [])),
+    ])
+    preset_key = resolve_typo_preset(
+        style_tags=style_tags,
+        content=str(merged.get("content") or api_content),
+        hint_text=hint_text,
+    )
+    if preset_key:
+        merged.update(get_preset_layout(preset_key))
+        merged["reason"] = f"[typo:{preset_key}] " + str(merged.get("reason") or "")
+        # Con dấu bật mà chưa có chữ -> mặc định lấy tên nghệ sĩ cho ra dấu có nghĩa.
+        if merged.get("seal_enabled") and not str(merged.get("seal_text") or "").strip():
+            author = str((track or {}).get("author") or "").strip()
+            if author:
+                merged["seal_text"] = author[:12]
+
+    normalized = normalize_text_profile(merged)
+    if current_content:
+        normalized["content"] = current_content[:80]
+        if "secondary_text" in (current or {}):
+            normalized["secondary_text"] = str(current["secondary_text"])[:120]
+    elif content:
+        normalized["content"] = content[:80]
+    normalized["design_goal"] = "decorative_video_typography"
     return normalized

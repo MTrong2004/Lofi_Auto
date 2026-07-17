@@ -124,6 +124,9 @@ def build_effect_profile(
 ) -> dict[str, Any]:
     """Ask an OpenAI-compatible endpoint for strict JSON, then validate every field."""
     fallback = fallback_effect_profile(track, music_tags, image_context)
+    if not str(api_key or "").strip():
+        api_url = "https://text.pollinations.ai/openai"
+        model = "openai"
     if not enabled or not api_url.strip():
         return fallback
     system = (
@@ -144,12 +147,23 @@ def build_effect_profile(
     headers = {"Content-Type": "application/json"}
     if api_key.strip():
         headers["Authorization"] = f"Bearer {api_key.strip()}"
+
+    req_json = {
+        "model": model, "temperature": 0.25, "max_tokens": 600,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    }
+    # Pollinations doesn't support response_format json_object
+    is_pollinations = "pollinations.ai" in str(api_url).lower()
+    if not is_pollinations:
+        req_json["response_format"] = {"type": "json_object"}
+
     try:
-        response = requests.post(api_url, headers=headers, json={
-            "model": model, "temperature": 0.25, "max_tokens": 600,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"},
-        }, timeout=timeout)
+        response = requests.post(api_url, headers=headers, json=req_json, timeout=timeout)
+        # If server rejects json_object response format, retry without it
+        if response.status_code == 400 and "response_format" in req_json:
+            req_json.pop("response_format")
+            response = requests.post(api_url, headers=headers, json=req_json, timeout=timeout)
+
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         if isinstance(content, dict):

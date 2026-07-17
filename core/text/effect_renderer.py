@@ -9,6 +9,8 @@ Chức năng chính:
   dịch mốc thời gian và chỉ chèn intro/outro ở segment tương ứng. Trả None nếu segment
   không giao với khoảng thời gian có chữ.
 - Định vị theo lưới 9 ô + safe zone cho video 1920x1080 (tự co giãn theo kích thước thật).
+- CON DẤU ĐỎ (seal) kiểu bìa nhạc Hoa ngữ: hộp đục đỏ + chữ trắng xếp dọc, bật bằng
+  profile['seal_enabled'] + seal_text/seal_color; giãn ký tự qua profile['letter_spacing'].
 
 API được file khác sử dụng:
 - build_ass_file()
@@ -62,6 +64,21 @@ def _escape_text(content: str) -> str:
     out = out.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\N")
     return out.strip()
 
+
+
+def _layout_text(content: str, direction: str) -> str:
+    """Chuyển cụm chữ ngắn sang bố cục dọc bằng xuống dòng ASS."""
+    text = _escape_text(content)
+    if str(direction or "horizontal").lower() != "vertical":
+        return text
+    # Không tách khoảng trắng thành một dòng trống; giữ từng cụm Latin nếu có.
+    raw = str(content or "").strip()
+    if not raw:
+        return ""
+    if " " in raw and not any("\u3400" <= ch <= "\u9fff" for ch in raw):
+        return _escape_text(raw)
+    chars = [ch for ch in raw if not ch.isspace()]
+    return r"\N".join(_escape_text(ch) for ch in chars)
 
 def _safe_margins(width: int, height: int) -> dict[str, int]:
     sx = width / _REF_W
@@ -146,6 +163,61 @@ def _override_tags(
     return "{" + "".join(tags) + "}" if tags else ""
 
 
+def _build_seal(
+    profile: dict[str, Any],
+    *,
+    alignment: int,
+    width: int,
+    height: int,
+    margins: dict[str, int],
+    font_family: str,
+    local_start: float,
+    local_end: float,
+) -> tuple[str | None, str | None]:
+    """Tạo (Style, Dialogue) cho con dấu đỏ dọc. Trả (None, None) nếu tắt hoặc thiếu chữ.
+
+    Con dấu = hộp ĐỤC màu đỏ (BorderStyle=3, OutlineColour=màu dấu) + chữ trắng xếp dọc,
+    đặt bên cạnh tiêu đề (lệch về giữa khung để không chồng chữ chính).
+    """
+    if not profile.get("seal_enabled"):
+        return None, None
+    raw = str(profile.get("seal_text") or "").strip()
+    if not raw:
+        return None, None
+
+    chars = [ch for ch in raw if not ch.isspace()]
+    if not chars:
+        return None, None
+    vtext = r"\N".join(_escape_text(ch) for ch in chars)
+
+    box_color = _ass_color(profile.get("seal_color", "#B23A2E"))  # màu nền hộp dấu
+    white = _ass_color("#FFFFFF")
+    seal_fs = max(16, int(height * 0.030))
+    pad = max(4, int(height * 0.008))
+
+    # Vị trí: cạnh tiêu đề, dịch về phía giữa khung theo cột của tiêu đề.
+    tx, ty = _anchor_xy(alignment, width, height, margins)
+    col = (alignment - 1) % 3  # 0=trái, 1=giữa, 2=phải
+    if col == 2:       # tiêu đề bên phải -> dấu nằm bên trái tiêu đề
+        sx = int(tx - 0.12 * width)
+    elif col == 0:     # tiêu đề bên trái -> dấu nằm bên phải
+        sx = int(tx + 0.10 * width)
+    else:
+        sx = int(tx - 0.13 * width)
+    sy = int(height * 0.52)
+
+    # BorderStyle=3 (hộp đục) + Outline=pad (đệm hộp) + Shadow=0; Alignment 5 (neo giữa) để \pos chuẩn.
+    seal_style = (
+        f"Style: Seal,{font_family},{seal_fs},{white},{white},{box_color},&H00000000,"
+        f"-1,0,0,0,100,100,2,0,3,{pad},0,5,0,0,0,1"
+    )
+    seal_dialogue = (
+        f"Dialogue: 1,{_ass_time(local_start)},{_ass_time(local_end)},Seal,,0,0,0,,"
+        f"{{\\an5\\pos({sx},{sy})\\fad(300,300)}}{vtext}"
+    )
+    return seal_style, seal_dialogue
+
+
 def build_ass_file(
     profile: dict[str, Any],
     out_path: str | Path,
@@ -161,7 +233,9 @@ def build_ass_file(
     Ghi file .ass cho cửa sổ thời gian [segment_start, segment_start+segment_duration].
     Trả về đường dẫn file, hoặc None nếu segment không chứa chữ (không cần filter).
     """
-    content = _escape_text(profile.get("content"))
+    direction = str(profile.get("writing_direction") or "horizontal")
+    content = _layout_text(profile.get("content"), direction)
+    secondary = _escape_text(profile.get("secondary_text"))
     if not content:
         return None
 
@@ -198,19 +272,37 @@ def build_ass_file(
 
     font_size = int(max(16, min(int(profile.get("font_size", 72)), 200)))
     outline_width = float(max(0.0, min(float(profile.get("outline_width", 2.0)), 8.0)))
+    spacing = float(max(0.0, min(float(profile.get("letter_spacing", 0.0) or 0.0), 40.0)))
     primary = _ass_color(profile.get("text_color", "#FFFFFF"))
     outline = _ass_color(profile.get("outline_color", "#000000"))
     bold = -1 if profile.get("bold") else 0
 
+    # Spacing (giãn ký tự) nằm ở trường thứ 3 sau ScaleX,ScaleY trong V4+ style.
     style = (
         f"Style: Text,{font_family},{font_size},{primary},{primary},{outline},&H64000000,"
-        f"{bold},0,0,0,100,100,0,0,1,{outline_width:.1f},1,{alignment},"
+        f"{bold},0,0,0,100,100,{spacing:.1f},0,1,{outline_width:.1f},1,{alignment},"
         f"{margins['left']},{margins['right']},{margins['bottom']},1"
     )
+    style_lines = [style]
 
-    dialogue = (
-        f"Dialogue: 0,{_ass_time(local_start)},{_ass_time(local_end)},Text,,0,0,0,,{override}{content}"
+    if secondary:
+        secondary_size = max(14, int(round(font_size * 0.42)))
+        full_text = f"{content}\\N{{\\fs{secondary_size}}}{secondary}"
+    else:
+        full_text = content
+
+    dialogue_lines = [
+        f"Dialogue: 0,{_ass_time(local_start)},{_ass_time(local_end)},Text,,0,0,0,,{override}{full_text}"
+    ]
+
+    # --- Con dấu đỏ (seal) kiểu bìa nhạc Hoa ngữ: hộp đục màu đỏ + chữ trắng xếp DỌC ---
+    seal_style, seal_dialogue = _build_seal(
+        profile, alignment=alignment, width=width, height=height, margins=margins,
+        font_family=font_family, local_start=local_start, local_end=local_end,
     )
+    if seal_style and seal_dialogue:
+        style_lines.append(seal_style)
+        dialogue_lines.append(seal_dialogue)
 
     ass = "\n".join([
         "[Script Info]",
@@ -224,11 +316,11 @@ def build_ass_file(
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,"
         "Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
         "Alignment,MarginL,MarginR,MarginV,Encoding",
-        style,
+        *style_lines,
         "",
         "[Events]",
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
-        dialogue,
+        *dialogue_lines,
         "",
     ])
     out_path = Path(out_path)

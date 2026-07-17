@@ -1,6 +1,20 @@
 """
-Media Probe Module.
-Uses ffprobe to analyze media streams, retrieve durations, verify codecs, and measure loudness (LUFS) of audio.
+AI FILE NOTE - MEDIA PROBE
+Chức năng chính:
+- Dùng ffprobe phân tích file media: liệt kê luồng video/audio, codec, độ phân giải, frame rate, thời lượng, kích thước, bitrate.
+- Dùng ffmpeg loudnorm đo integrated loudness (LUFS) và true peak (dBTP); dùng silencedetect phát hiện các đoạn im lặng bất thường.
+Đầu vào chính:
+- Path file media; tham số noise_db/duration cho phát hiện im lặng.
+Đầu ra chính:
+- dict metadata media (video_streams/audio_streams/duration_seconds...), dict loudness (LUFS/true_peak/LRA), list các khoảng im lặng.
+API được file khác sử dụng:
+- MediaProbe.probe_media, MediaProbe.get_loudness_and_peak, MediaProbe.detect_silence, MediaProbeError.
+Phụ thuộc quan trọng:
+- config, FFmpeg/ffprobe cài sẵn trên hệ thống (subprocess), re/json để parse output.
+Lưu ý khi sửa:
+- loudnorm/silencedetect in kết quả ra STDERR; ffmpeg có thể trả exit code khác 0 nhưng vẫn có dữ liệu -> giữ nhánh parse lại từ e.stderr trước khi báo lỗi.
+- probe_media ưu tiên duration của format, fallback sang stream nếu thiếu.
+- Khối __main__ chỉ tự sinh audio test để chạy thử.
 """
 import subprocess
 import json

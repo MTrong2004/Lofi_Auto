@@ -1,6 +1,23 @@
 """
-CORE MODULE: ASS RENDERER
-Biên dịch danh sách câu phụ đề kèm cấu hình style thành file phụ đề .ass chuẩn Karaoke.
+AI FILE NOTE - ASS RENDERER (PHỤ ĐỀ KARAOKE)
+Chức năng chính:
+- Biên dịch danh sách câu lyrics + cấu hình style thành file phụ đề .ass chuẩn Karaoke (libass/FFmpeg).
+- Quản lý manifest phụ đề của từng project (load/save JSON, gán style mặc định).
+- Dựng tag karaoke chạy chữ {\\kf} theo word timings, 2 dòng: câu gốc/pinyin và câu dịch tiếng Việt.
+- Tiện ích chuyển màu Hex -> màu ASS (&HAABBGGRR) và định dạng thời gian ASS (H:MM:SS.cs).
+Đầu vào chính:
+- project_id; danh sách lyrics [{start, end, text, pinyin, vietnamese, words:[{word,start,end}]}]; dict style_config; output_path.
+Đầu ra chính:
+- File .ass ghi ra output_path; file JSON manifest tại data/subtitles/<project_id>_subtitle_manifest.json.
+API được file khác sử dụng:
+- generate_ass_file(), load_subtitle_manifest(), save_subtitle_manifest(), get_subtitle_manifest_path(),
+  hex_to_ass_color(), format_ass_time(), hằng DEFAULT_SUBTITLE_STYLE, SUBTITLES_DIR.
+Phụ thuộc quan trọng:
+- Thư viện chuẩn: json, logging, pathlib. Không có phụ thuộc ngoài.
+Lưu ý khi sửa:
+- Thứ tự byte màu ASS là Alpha-Blue-Green-Red, không phải RGB.
+- PrimaryColour = màu đã tô (active), SecondaryColour = màu chờ tô; lưu ý trong generate_ass_file 2 màu bị hoán đổi có chủ đích.
+- Câu có start >= end bị bỏ qua; word_cs tối thiểu 1 centisecond để tránh chia lỗi.
 """
 from __future__ import annotations
 

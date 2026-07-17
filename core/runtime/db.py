@@ -24,7 +24,7 @@ from datetime import datetime
 sys.path.append(str(Path(__file__).parent.parent))
 import config
 
-DB_PATH = config.BASE_DIR / "data" / "lofi_automation.db"
+DB_PATH = getattr(config, "DB_PATH", config.BASE_DIR / "data" / "database" / "lofi_automation.db")
 
 def get_db_connection():
     """Tạo kết nối tới SQLite và bật Foreign Keys, thiết lập timeout."""

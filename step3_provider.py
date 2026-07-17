@@ -1,41 +1,348 @@
 """
-AI FILE NOTE - STEP 3: EFFECT PROVIDER AND OVERLAYS
-
+AI FILE NOTE - STEP 3 PROVIDER (LYRIC + EFFECT)
 Chức năng chính:
-- Liệt kê, tải và quản lý các video hiệu ứng overlay (mưa, bụi, tuyết, đĩa than...).
-- Hỗ trợ tải hiệu ứng online từ Pexels API.
-- Tự động sinh ra các hiệu ứng video lặp khít (seamless loop) bằng FFmpeg (lavfi) nếu thiếu.
-- Chọn ngẫu nhiên hoặc chỉ định hiệu ứng cho video thành phẩm.
-
+- Gộp hai nhóm chức năng của Step 3: (1) xử lý vocal, nhận dạng lời (Whisper), tìm lời online (LRCLIB/Musixmatch), dịch tiếng Việt + Pinyin và xuất phụ đề .ass; (2) tìm/tải/tạo/phân tích và đề xuất hiệu ứng overlay (Pexels, Pixabay, bộ hiệu ứng dựng bằng FFmpeg).
+- Chuẩn hóa, xếp hạng candidate lời theo metadata; đề xuất hiệu ứng local-first rồi mới gọi API online.
 Đầu vào chính:
-- Từ khóa tìm kiếm hiệu ứng (query), API key Pexels, hoặc yêu cầu sinh hiệu ứng mặc định.
-
+- audio/vocal path, thông tin bài (title/artist/album/duration), segments lời; từ khóa và API key (Pexels/Pixabay/Musixmatch); dict profile hiệu ứng từ AI.
 Đầu ra chính:
-- Path tới video hiệu ứng MP4 làm overlay cho bước render.
-
+- File vocal/instrumental, list segments (kèm words/pinyin/vietnamese), file .ass; file .mp4 hiệu ứng trong data/effects kèm manifest + credit.
 API được file khác sử dụng:
-- list_effect_videos()
-- download_pexels_effect()
-- create_builtin_effect_pack()
-- pick_effect_video()
-
+- run_vocal_separation, run_transcription, search_online_lyrics, find_online_lyrics, auto_translate_and_pinyin, generate_subtitles_file, load/save_project_subtitles, list_effect_videos, download_pexels_effect, create_builtin_effect_pack, pick_effect_video, search_pixabay_effects, download_pixabay_effect, recommend_effects, build_ai_effect_profile, analyze_effect_type.
 Phụ thuộc quan trọng:
-- config, requests, FFmpeg, Path.
+- config, requests, subprocess (FFmpeg/ffprobe); core.lyrics.*, core.text.ass_renderer (được reload), core.effects.* (manifest/recommender/analyzer).
+Lưu ý khi sửa:
+- URL tải Pixabay phải qua `_allowed_pixabay_url` (chỉ domain Pixabay, https); giữ giới hạn dung lượng EFFECT_MAX_DOWNLOAD_MB và tải qua file .part rồi replace.
+- Lời bài hát chỉ lấy/chấm điểm theo metadata, KHÔNG dùng AI sáng tác/sửa lời.
+- renderer được importlib.reload ngay khi import; đừng bỏ dòng reload nếu chưa chắc cache Streamlit.
 """
-import os
-import re
-import random
-import logging
-import requests
-import subprocess
-from pathlib import Path
+from __future__ import annotations
 
-# Đảm bảo import được config.py từ thư mục cha
+import importlib
+import logging
+import os
+import random
+import re
+import subprocess
 import sys
+from pathlib import Path
+from typing import Any
+
+import requests
+
+# Đảm bảo import được config.py từ thư mục cha.
 sys.path.append(str(Path(__file__).parent.parent))
 import config
 
-logger = logging.getLogger("lofi_automation")
+# Các module cốt lõi xử lý lyric và phụ đề.
+import core.lyrics.vocal_separator as separator
+import core.lyrics.transcriber as transcriber
+import core.lyrics.translator as translator
+import core.text.ass_renderer as renderer
+
+# Streamlit giữ module trong cache giữa các lần rerun. Reload để bản renderer
+# vừa gộp manifest được dùng ngay, thay vì bản cũ thiếu các hàm manifest.
+renderer = importlib.reload(renderer)
+
+logger = logging.getLogger("lofi.step3_provider")
+_LRCLIB_GET_URL = "https://lrclib.net/api/get"
+_LRCLIB_SEARCH_URL = "https://lrclib.net/api/search"
+_MUSIXMATCH_SUBTITLE_URL = "https://api.musixmatch.com/ws/1.1/matcher.subtitle.get"
+_LYRICS_HEADERS = {"User-Agent": "LoFi-Studio/1.0"}
+_TIMED_LINE = re.compile(r"^\[(?P<minutes>\d{1,3}):(?P<seconds>\d{2}(?:\.\d{1,3})?)\](?P<text>.*)$")
+
+def get_vocals_dir() -> Path:
+    """Trả về thư mục lưu trữ file vocal tách và phụ đề."""
+    path = Path("data/subtitles")
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def run_vocal_separation(
+    audio_path: Path,
+    model: str = "htdemucs",
+    progress_callback = None
+) -> tuple[Path, Path]:
+    """Tách vocal và instrumental."""
+    return separator.separate_vocals(
+        input_audio=audio_path,
+        output_dir=get_vocals_dir(),
+        model=model,
+        progress_callback=progress_callback
+    )
+
+def run_transcription(
+    vocal_path: Path,
+    model_name: str = "base",
+    language: str | None = None,
+    progress_callback = None
+) -> list[dict[str, Any]]:
+    """Nhận diện lời từ vocal."""
+    return transcriber.transcribe_vocals(
+        vocal_path=vocal_path,
+        model_name=model_name,
+        language=language,
+        progress_callback=progress_callback
+    )
+
+def _lyrics_candidate(item: dict[str, Any], duration: float, source: str) -> dict[str, Any] | None:
+    """Chuẩn hóa một kết quả lyric thành candidate dùng chung cho giao diện."""
+    synced = item.get("syncedLyrics") or item.get("subtitle_body")
+    plain = item.get("plainLyrics") or item.get("lyrics_body")
+    segments = _segments_from_synced(synced, duration) if synced else _segments_from_plain(plain or "", duration)
+    if not segments:
+        return None
+    return {
+        "source": source,
+        "track_name": item.get("trackName") or item.get("track_name") or "",
+        "artist_name": item.get("artistName") or item.get("artist_name") or "",
+        "album_name": item.get("albumName") or item.get("album_name") or "",
+        "duration": item.get("duration") or duration,
+        "segments": segments,
+        "timing": "synced" if synced else "estimated",
+    }
+
+
+def _lrclib_exact(title: str, artist: str, album: str, duration: float) -> dict[str, Any] | None:
+    """Tìm exact match qua /api/get. Chỉ gọi khi đủ album theo yêu cầu LRCLIB."""
+    if not title.strip() or not artist.strip() or not album.strip() or duration <= 0:
+        return None
+    response = requests.get(
+        _LRCLIB_GET_URL,
+        params={
+            "track_name": title.strip(), "artist_name": artist.strip(),
+            "album_name": album.strip(), "duration": int(round(duration)),
+        },
+        headers=_LYRICS_HEADERS, timeout=18,
+    )
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return _lyrics_candidate(response.json(), duration, "LRCLIB exact")
+
+
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (value or "").casefold()).strip()
+
+
+def _rank_lyric_candidate(item: dict[str, Any], title: str, artist: str, album: str, duration: float) -> float:
+    """Chấm điểm metadata, không dùng AI để sáng tác hoặc sửa lời."""
+    wanted_title = _normalize_match_text(title)
+    wanted_artist = _normalize_match_text(artist)
+    wanted_album = _normalize_match_text(album)
+    got_title = _normalize_match_text(str(item.get("trackName") or ""))
+    got_artist = _normalize_match_text(str(item.get("artistName") or ""))
+    got_album = _normalize_match_text(str(item.get("albumName") or ""))
+    score = 0.0
+    score += 55 if got_title == wanted_title and wanted_title else 25 if wanted_title and wanted_title in got_title else 0
+    score += 25 if got_artist == wanted_artist and wanted_artist else 12 if wanted_artist and wanted_artist in got_artist else 0
+    score += 8 if wanted_album and got_album == wanted_album else 0
+    try:
+        gap = abs(float(item.get("duration") or duration) - duration)
+    except (TypeError, ValueError):
+        gap = 999.0
+    score += max(0.0, 12.0 - min(gap, 12.0))
+    score += 8 if item.get("syncedLyrics") else 0
+    return score
+
+
+def _lrclib_search(title: str, artist: str, album: str, duration: float, limit: int) -> list[dict[str, Any]]:
+    response = requests.get(
+        _LRCLIB_SEARCH_URL,
+        params={"track_name": title.strip(), "artist_name": artist.strip()},
+        headers=_LYRICS_HEADERS, timeout=15,
+    )
+    response.raise_for_status()
+    results = response.json() or []
+    if not results:
+        response = requests.get(
+            _LRCLIB_SEARCH_URL, params={"q": f"{title} {artist}".strip()},
+            headers=_LYRICS_HEADERS, timeout=15,
+        )
+        response.raise_for_status()
+        results = response.json() or []
+    ranked = sorted(
+        results,
+        key=lambda item: _rank_lyric_candidate(item, title, artist, album, duration),
+        reverse=True,
+    )
+    candidates = []
+    for item in ranked[:max(1, limit)]:
+        candidate = _lyrics_candidate(item, duration, "LRCLIB search")
+        if candidate:
+            candidate["match_score"] = round(_rank_lyric_candidate(item, title, artist, album, duration), 1)
+            candidates.append(candidate)
+    return candidates
+
+
+def _musixmatch_candidate(title: str, artist: str, duration: float, api_key: str) -> dict[str, Any] | None:
+    if not api_key.strip():
+        return None
+    response = requests.get(
+        _MUSIXMATCH_SUBTITLE_URL,
+        params={
+            "apikey": api_key.strip(), "q_track": title.strip(),
+            "q_artist": artist.strip(), "f_subtitle_length": int(round(duration)),
+            "f_subtitle_length_max_deviation": 3,
+        },
+        headers=_LYRICS_HEADERS, timeout=18,
+    )
+    response.raise_for_status()
+    message = (response.json() or {}).get("message") or {}
+    if int((message.get("header") or {}).get("status_code") or 0) != 200:
+        return None
+    subtitle = ((message.get("body") or {}).get("subtitle") or {})
+    body = str(subtitle.get("subtitle_body") or "").strip()
+    if not body:
+        return None
+    return _lyrics_candidate({
+        "track_name": title, "artist_name": artist,
+        "duration": duration, "subtitle_body": body,
+    }, duration, "Musixmatch")
+
+
+def search_online_lyrics(
+    title: str,
+    artist: str,
+    duration: float = 180.0,
+    limit: int = 5,
+    album: str = "",
+    musixmatch_api_key: str = "",
+) -> dict[str, Any]:
+    """Exact LRCLIB -> LRCLIB search/ranking -> Musixmatch. Whisper do UI xử lý cuối."""
+    title, artist, album = str(title or ""), str(artist or ""), str(album or "")
+    if not title.strip():
+        return {"found": False, "reason": "Thiếu tên bài hát để tìm lời."}
+    errors: list[str] = []
+    candidates: list[dict[str, Any]] = []
+
+    try:
+        exact = _lrclib_exact(title, artist, album, duration)
+        if exact:
+            exact["match_score"] = 100.0
+            candidates.append(exact)
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        errors.append(f"LRCLIB exact: {exc}")
+
+    try:
+        for candidate in _lrclib_search(title, artist, album, duration, limit):
+            signature = (candidate["track_name"], candidate["artist_name"], candidate["album_name"], candidate["timing"])
+            if not any((x["track_name"], x["artist_name"], x["album_name"], x["timing"]) == signature for x in candidates):
+                candidates.append(candidate)
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        errors.append(f"LRCLIB search: {exc}")
+
+    key = (musixmatch_api_key or getattr(config, "MUSIXMATCH_API_KEY", "") or os.getenv("MUSIXMATCH_API_KEY", "")).strip()
+    if key and not any(item.get("timing") == "synced" and float(item.get("match_score") or 0) >= 90 for item in candidates):
+        try:
+            mxm = _musixmatch_candidate(title, artist, duration, key)
+            if mxm:
+                mxm["match_score"] = 90.0
+                candidates.append(mxm)
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            errors.append(f"Musixmatch: {exc}")
+
+    if not candidates:
+        reason = "Không tìm thấy lời online. Hãy dùng Whisper để nhận dạng từ audio."
+        if errors:
+            reason += " " + " | ".join(errors)[:300]
+        return {"found": False, "reason": reason, "fallback": "whisper", "errors": errors}
+    candidates.sort(key=lambda item: (item.get("timing") == "synced", float(item.get("match_score") or 0)), reverse=True)
+    return {"found": True, "candidates": candidates[:max(1, limit)], "errors": errors}
+
+
+def find_online_lyrics(
+    title: str, artist: str, duration: float = 180.0,
+    album: str = "", musixmatch_api_key: str = "",
+) -> dict[str, Any]:
+    """Tương thích API cũ, trả candidate tốt nhất từ pipeline mới."""
+    result = search_online_lyrics(title, artist, duration, 5, album, musixmatch_api_key)
+    if not result.get("found"):
+        return result
+    best = result["candidates"][0]
+    return {
+        "found": True, "segments": best["segments"], "source": best["source"],
+        "timing": best["timing"], "match_score": best.get("match_score"),
+    }
+
+def _word_timing(text: str, start: float, end: float) -> list[dict[str, Any]]:
+    words = text.split()
+    chunk = max(0.05, end - start) / max(1, len(words))
+    return [{"word": word, "start": start + index * chunk, "end": start + (index + 1) * chunk} for index, word in enumerate(words)]
+
+def _segments_from_synced(text: str, duration: float) -> list[dict[str, Any]]:
+    rows = []
+    for raw_line in text.splitlines():
+        match = _TIMED_LINE.match(raw_line.strip())
+        if match and match.group("text").strip():
+            rows.append((int(match.group("minutes")) * 60 + float(match.group("seconds")), match.group("text").strip()))
+    segments = []
+    for index, (start, line) in enumerate(rows):
+        end = max(start + 0.5, rows[index + 1][0] if index + 1 < len(rows) else duration)
+        segments.append({"start": start, "end": end, "text": line, "words": _word_timing(line, start, end), "pinyin": "", "vietnamese": ""})
+    return segments
+
+def _segments_from_plain(text: str, duration: float) -> list[dict[str, Any]]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    chunk = max(1.5, duration / max(1, len(lines)))
+    return [
+        {"start": index * chunk, "end": min(duration, (index + 1) * chunk), "text": line,
+         "words": _word_timing(line, index * chunk, min(duration, (index + 1) * chunk)), "pinyin": "", "vietnamese": ""}
+        for index, line in enumerate(lines)
+    ]
+
+def auto_translate_and_pinyin(
+    segments: list[dict[str, Any]],
+    source_language: str,
+    song_info: dict | None = None
+) -> list[dict[str, Any]]:
+    """
+    Tự động dịch nghĩa tiếng Việt cho toàn bộ phân đoạn và tạo phiên âm Pinyin (nếu là tiếng Trung).
+    """
+    if not segments:
+        return []
+        
+    original_texts = [seg.get("text", "").strip() for seg in segments]
+    
+    # 1. Sinh Pinyin nếu là tiếng Trung
+    pinyin_lines = []
+    if source_language == "zh":
+        pinyin_lines = translator.generate_pinyin(original_texts)
+    else:
+        pinyin_lines = [""] * len(original_texts)
+        
+    # 2. Dịch nghĩa tiếng Việt bằng LLM
+    vietnamese_lines = translator.translate_lyrics_to_vietnamese(original_texts, song_info)
+    
+    # 3. Gộp ngược lại vào segments
+    for idx, seg in enumerate(segments):
+        if idx < len(pinyin_lines):
+            seg["pinyin"] = pinyin_lines[idx]
+        if idx < len(vietnamese_lines):
+            seg["vietnamese"] = vietnamese_lines[idx]
+            
+    return segments
+
+def generate_subtitles_file(
+    project_id: str,
+    segments: list[dict[str, Any]],
+    style_config: dict[str, Any]
+) -> Path:
+    """Tạo file phụ đề .ass karaoke hoàn chỉnh cho dự án."""
+    output_path = get_vocals_dir() / f"{project_id}_subtitles.ass"
+    return renderer.generate_ass_file(segments, style_config, output_path)
+
+def load_project_subtitles(project_id: str) -> dict[str, Any]:
+    """Tải cấu hình phụ đề dự án từ manifest."""
+    return renderer.load_subtitle_manifest(project_id)
+
+def save_project_subtitles(project_id: str, data: dict[str, Any]) -> None:
+    """Lưu cấu hình phụ đề dự án vào manifest."""
+    renderer.save_subtitle_manifest(project_id, data)
+
+
+# -----------------------------------------------------------------------------
+# EFFECT PROVIDER AND OVERLAYS
+# -----------------------------------------------------------------------------
 
 def _safe_slug(text: str, max_len: int = 60) -> str:
     """Tạo tên file an toàn từ từ khóa tìm kiếm."""

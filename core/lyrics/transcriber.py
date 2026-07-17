@@ -1,6 +1,20 @@
 """
-CORE MODULE: LYRICS TRANSCRIBER
-Nhận dạng giọng nói/lời hát từ file Vocal sử dụng OpenAI Whisper.
+AI FILE NOTE - LYRICS TRANSCRIBER
+Chức năng chính:
+- Nhận dạng lời hát từ file vocal bằng OpenAI Whisper, trả về câu kèm timestamp và word-level timing.
+- Kiểm tra Whisper đã cài chưa; nếu chưa thì ném ImportError kèm hướng dẫn cài.
+- Nếu Whisper không trả word timestamps thì tự phân bổ đều thời gian theo số từ.
+Đầu vào chính:
+- vocal_path (Path file vocal), model_name (mặc định "base"), language tùy chọn, progress_callback tùy chọn.
+Đầu ra chính:
+- list[dict] mỗi phần tử: {"start", "end", "text", "words": [{"word","start","end"}]}.
+API được file khác sử dụng:
+- transcribe_vocals(), is_whisper_installed().
+Phụ thuộc quan trọng:
+- openai-whisper (import trong subprocess/runtime), subprocess, logging.
+Lưu ý khi sửa:
+- Whisper được import trễ (lazy) bên trong hàm để tránh nạp torch sớm; giữ nguyên cơ chế này.
+- Giữ đúng cấu trúc dict trả về vì các module render/subtitle phụ thuộc vào nó.
 """
 from __future__ import annotations
 

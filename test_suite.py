@@ -1,3 +1,20 @@
+"""
+AI FILE NOTE - TEST_SUITE (KIỂM THỬ NỀN TẢNG CORE)
+Chức năng chính:
+- Bộ test unittest cho lớp nền tảng core (class TestCorePlatformV45): DB 8 bảng, JSON Schema, ProjectManager (atomic write), LockManager (fencing token/heartbeat), Scheduler + RenderWorker (claim/hủy job), OutputVerifier, các gate Stable Diffusion (adapter/model/health/installer, dùng mock), audio (LUFS/loop/preview), upscaler fallback Lanczos, Parallax 2.5D, phụ đề Karaoke ASS.
+- Nhiều test gọi ffmpeg thật để sinh file audio/video tạm rồi kiểm tra kết quả.
+Đầu vào chính:
+- Không có tham số; tự khởi tạo DB trong setUpClass và tạo dữ liệu tạm trong tempdir.
+Đầu ra chính:
+- Kết quả pass/fail của unittest (chạy `python test_suite.py`).
+API được file khác sử dụng:
+- Là script test chạy trực tiếp (unittest.main() ở __main__); không được import như thư viện.
+Phụ thuộc quan trọng:
+- config, core.runtime.* (db, schemas, project_manager, lock_manager, cache_manager, resource_scheduler, render_worker), core.media.* (probe, output_verifier, audio_processor), core.image.* (sd_manager, upscaler, parallax_processor), core.text.ass_renderer; ngoài: ffmpeg (CLI), PIL, unittest.mock.
+Lưu ý khi sửa:
+- Cần ffmpeg trong PATH cho các test media (06, 11, 12); các test SD dùng mock requests nên không cần server thật.
+- Test tự dọn dẹp bản ghi DB và file tạm; test_11 tạo data/effects/rain_ambience.mp3 nếu thiếu (side effect trên repo).
+"""
 import os
 import sys
 import unittest
@@ -572,6 +589,125 @@ class TestCorePlatformV45(unittest.TestCase):
             self.assertIn("Dialogue: 0,0:00:01.00,0:00:04.50,Translation", content)
             # Kiểm tra tag karaoke của libass {\kf...}
             self.assertIn(r"{\kf", content)
+
+    def test_15_llm_attempt_chain(self):
+        """Kiểm tra chuỗi fallback provider/model của hàm LLM chung (không gọi mạng)."""
+        from utils import helpers
+
+        gemini_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        poll_url = "https://text.pollinations.ai/openai"
+        overrides = {
+            "PROMPT_API_URL": gemini_url,
+            "PROMPT_API_MODEL": "gemini-2.5-flash",
+            "PROMPT_API_FALLBACK_MODEL": "gemini-3.1-flash-lite",
+            "PROMPT_API_FALLBACK_URL": poll_url,
+            "PROMPT_API_FALLBACK_URL_MODEL": "openai",
+            "LLM_FALLBACK_ENABLED": True,
+        }
+        saved = {k: getattr(config, k, None) for k in overrides}
+        try:
+            for k, v in overrides.items():
+                setattr(config, k, v)
+
+            # Không có key Gemini -> bỏ qua cả 2 attempt Gemini, chỉ còn Pollinations.
+            setattr(config, "PROMPT_API_KEY", "")
+            chain = helpers._llm_attempt_chain()
+            self.assertEqual([m for _, _, m in chain], ["openai"],
+                             "Thiếu key Gemini phải bỏ qua Gemini, chỉ giữ Pollinations.")
+
+            # Có key Gemini -> đủ 3 mắt xích: model chính, model nhẹ, rồi Pollinations.
+            setattr(config, "PROMPT_API_KEY", "fake-key")
+            chain = helpers._llm_attempt_chain()
+            self.assertEqual(
+                [m for _, _, m in chain],
+                ["gemini-2.5-flash", "gemini-3.1-flash-lite", "openai"],
+                "Chuỗi fallback sai khi có key Gemini.")
+
+            # Tắt fallback -> chỉ còn model chính.
+            setattr(config, "LLM_FALLBACK_ENABLED", False)
+            chain = helpers._llm_attempt_chain()
+            self.assertEqual([m for _, _, m in chain], ["gemini-2.5-flash"],
+                             "Tắt fallback vẫn còn provider dự phòng.")
+        finally:
+            for k, v in saved.items():
+                setattr(config, k, v)
+
+    def test_16_llm_fallback_on_error(self):
+        """Kiểm tra call_llm_chat chuyển provider khi 429 và bỏ response_format khi 400 (mock)."""
+        from unittest.mock import patch, MagicMock
+        from utils import helpers
+
+        gemini_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        poll_url = "https://text.pollinations.ai/openai"
+        overrides = {
+            "PROMPT_API_URL": gemini_url,
+            "PROMPT_API_KEY": "fake-key",
+            "PROMPT_API_MODEL": "gemini-2.5-flash",
+            "PROMPT_API_FALLBACK_MODEL": "",
+            "PROMPT_API_FALLBACK_URL": poll_url,
+            "PROMPT_API_FALLBACK_URL_MODEL": "openai",
+            "LLM_FALLBACK_ENABLED": True,
+            "PROMPT_RETRY_DELAY_SECONDS": 0,
+        }
+        saved = {k: getattr(config, k, None) for k in overrides}
+
+        def make_resp(status, content=""):
+            res = MagicMock()
+            res.status_code = status
+            res.json.return_value = {"choices": [{"message": {"content": content}}]}
+            def raise_for_status():
+                if status >= 400:
+                    import requests
+                    err = requests.HTTPError(f"HTTP {status}")
+                    err.response = res
+                    raise err
+            res.raise_for_status.side_effect = raise_for_status
+            return res
+
+        try:
+            for k, v in overrides.items():
+                setattr(config, k, v)
+
+            # Gemini trả 429 -> phải chuyển sang Pollinations và lấy được nội dung.
+            calls = []
+            def side_effect(url, *args, **kwargs):
+                calls.append(str(url))
+                if "generativelanguage" in str(url):
+                    return make_resp(429)
+                return make_resp(200, "xin chao tu pollinations")
+
+            with patch("requests.post", side_effect=side_effect):
+                out = helpers.call_llm_chat(
+                    [{"role": "user", "content": "hi"}], json_mode=True)
+            self.assertEqual(out, "xin chao tu pollinations",
+                             "Không fallback sang Pollinations khi Gemini 429.")
+            self.assertTrue(any("generativelanguage" in u for u in calls))
+            self.assertTrue(any("pollinations" in u for u in calls))
+
+            # Server từ chối response_format (400) rồi lần 2 (không kèm) thành công.
+            attempts = []
+            def side_effect_400(url, *args, **kwargs):
+                has_rf = "response_format" in (kwargs.get("json") or {})
+                attempts.append(has_rf)
+                if has_rf:
+                    return make_resp(400)
+                return make_resp(200, "ok khong response_format")
+
+            with patch("requests.post", side_effect=side_effect_400):
+                out = helpers.call_llm_chat(
+                    [{"role": "user", "content": "hi"}], json_mode=True)
+            self.assertEqual(out, "ok khong response_format",
+                             "Không thử lại sau khi 400 vì response_format.")
+            self.assertEqual(attempts[:2], [True, False],
+                             "Lần 2 vẫn còn response_format sau khi bị 400.")
+
+            # Mọi provider lỗi -> trả None (để nơi gọi tự fallback cục bộ).
+            with patch("requests.post", side_effect=lambda *a, **k: make_resp(500)):
+                out = helpers.call_llm_chat([{"role": "user", "content": "hi"}])
+            self.assertIsNone(out, "Mọi provider lỗi phải trả None.")
+        finally:
+            for k, v in saved.items():
+                setattr(config, k, v)
 
 if __name__ == "__main__":
     unittest.main()

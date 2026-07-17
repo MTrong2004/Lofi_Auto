@@ -97,6 +97,10 @@ def _validate(raw: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             result[num_key] = fallback[num_key]
     result["font_size"] = int(result["font_size"])
+    if "content" in raw and raw["content"]:
+        result["content"] = str(raw["content"])[:80]
+    if "secondary_text" in raw:
+        result["secondary_text"] = str(raw["secondary_text"])[:80]
     result["reason"] = str(raw.get("reason") or fallback["reason"])[:300]
     result["source"] = "ai"
     return result
@@ -116,6 +120,9 @@ def build_text_profile(
     enabled: bool = True,
 ) -> dict[str, Any]:
     fallback = fallback_text_profile(track, music_tags, image_context, content, video_duration)
+    if not str(api_key or "").strip():
+        api_url = "https://text.pollinations.ai/openai"
+        model = "openai"
     if not enabled or not str(api_url or "").strip():
         return fallback
     system = (
@@ -126,6 +133,9 @@ def build_text_profile(
         "text_color (hex), outline_color (hex), font_size (16-200), intro_effect "
         "(fade/blur_in/scale_slow/slide_up/slide_left), hold_effect (none/soft_glow/glow_breathe), "
         "outro_effect (fade/dissolve), intro_duration (0-5 sec), outro_duration (0-5 sec), reason. "
+        "IMPORTANT: If the input 'text_content' is empty, you MUST also generate the 'content' key "
+        "(a beautiful, short, decorative lofi phrase in Chinese/Japanese/English/Vietnamese, max 12 chars, e.g., '山河如梦', 'Yesterday', 'Mưa Đêm') "
+        "and 'secondary_text' key (a translation, pinyin, or sub-phrase, max 20 chars, e.g., 'Sơn Hà Như Mộng', or empty if not needed). "
         "Avoid faces and the main subject; keep text inside safe margins; pick colors readable over the image."
     )
     user = json.dumps({
@@ -133,22 +143,18 @@ def build_text_profile(
         "music_tags": music_tags or [], "image_context": image_context[:1500],
         "text_content": content[:200], "video_duration_seconds": video_duration,
     }, ensure_ascii=False)
-    headers = {"Content-Type": "application/json"}
-    if str(api_key or "").strip():
-        headers["Authorization"] = f"Bearer {str(api_key).strip()}"
     try:
-        response = requests.post(str(api_url).strip(), headers=headers, json={
-            "model": model, "temperature": 0.3, "max_tokens": 500,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"},
-        }, timeout=timeout)
-        response.raise_for_status()
-        payload = response.json()["choices"][0]["message"]["content"]
-        if isinstance(payload, dict):
-            raw = payload
-        else:
-            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(payload).strip(), flags=re.I)
-            raw = json.loads(cleaned)
+        # Dùng hàm LLM chung (fallback model/provider); primary = tham số truyền vào (config.PROMPT_API_*).
+        from utils.helpers import call_llm_chat
+        payload = call_llm_chat(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            json_mode=True, max_tokens=500, temperature=0.3, timeout=timeout,
+            primary=(api_url, api_key, model),
+        )
+        if not payload:
+            return fallback
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(payload).strip(), flags=re.I)
+        raw = json.loads(cleaned)
         return _validate(raw, fallback)
     except Exception as exc:
         result = dict(fallback)

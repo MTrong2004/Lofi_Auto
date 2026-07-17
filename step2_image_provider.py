@@ -514,8 +514,8 @@ def get_background_image(index: int = 0, project_id: str = None) -> Path:
         "source_size": "960x540",
         "final_size": "1920x1080",
         "upscale_method": "lanczos",
-        "source_path": f"data/temp_image/{full_hd_path.name}",
-        "full_hd_path": f"data/temp_image/{full_hd_path.name}"
+        "source_path": f"data/cache/temp_image/{full_hd_path.name}",
+        "full_hd_path": f"data/cache/temp_image/{full_hd_path.name}"
     }
     
     validate_data_schema(image_meta, "image_metadata")
@@ -534,7 +534,7 @@ def get_background_image(index: int = 0, project_id: str = None) -> Path:
                 conn.execute("""
                 INSERT OR REPLACE INTO assets (asset_id, project_id, path, sha256, mime_type, size_bytes, processing_status, review_status, created_at_utc)
                 VALUES (?, ?, ?, ?, 'image/png', ?, 'verified', 'approved', ?);
-                """, (asset_id, project_id, f"data/temp_image/{full_hd_path.name}", file_sha256, file_size, now_str))
+                """, (asset_id, project_id, f"data/cache/temp_image/{full_hd_path.name}", file_sha256, file_size, now_str))
                 
             ProjectManager.update_workflow_status(
                 project_id=project_id,

@@ -1,6 +1,25 @@
 """
-Stable Diffusion Manager Module.
-Consolidates Stable Diffusion WebUI operations: local process creation, automatic installation, option settings, checkpoint switching, health checks, and API requests.
+AI FILE NOTE - STABLE DIFFUSION MANAGER
+Chức năng chính:
+- Gom toàn bộ thao tác Stable Diffusion Local WebUI (AUTOMATIC1111): kết nối/gọi API, cài đặt tự động, khởi động/tắt tiến trình, kiểm tra sức khỏe, đổi model checkpoint.
+- SDAdapter: discover API, capability_check, validate_response, txt2img (giới hạn kích thước tránh tràn RAM).
+- SDHealthChecker: chạy health check 3 bước (API/model/generation) và xuất báo cáo JSON theo schema.
+- SDInstaller: cài đặt qua Staging + Rollback, preflight check, lọc extension theo allowlist, ghi install_state.json nguyên tử.
+- SDProcessManager: start/stop tiến trình theo PID tree, kiểm tra/giải phóng cổng, chạy bản cài sẵn của người dùng.
+- SDModelManager: xác minh SHA-256 checkpoint, nạp checkpoint qua API options, khóa lease model độc quyền khi render.
+Đầu vào chính:
+- api_url, install_dir (Path), port (mặc định 7860), payload txt2img, model_title, progress_callback tùy chọn.
+Đầu ra chính:
+- Ảnh base64 (txt2img), dict báo cáo/preflight, PID tiến trình, bool trạng thái thao tác, file install_state.json/report.
+API được file khác sử dụng:
+- Lớp SDAdapter, SDHealthChecker, SDInstaller, SDProcessManager, SDModelManager; exception SDAdapterError, SDModelError, SDProcessError, SDInstallerError.
+Phụ thuộc quan trọng:
+- config, core.runtime.lock_manager (LockManager), core.image.provider_capability (ProviderCapabilityRegistry), core.runtime.schemas (validate_data_schema), psutil, requests.
+Lưu ý khi sửa:
+- Chỉ bind loopback 127.0.0.1 vì lý do bảo mật; không mở ra ngoài.
+- Ghi install_state.json phải nguyên tử (tmp + os.replace) và có retry cho PermissionError trên Windows (antivirus/indexer khóa file).
+- Kill tiến trình phải theo PID tree (children recursive) để không sót tiến trình con.
+- PINNED_COMMIT/PINNED_GIT_URL được ghim phiên bản; đổi phải cẩn trọng tương thích.
 """
 import base64
 import hashlib

@@ -6,6 +6,8 @@ Chức năng chính:
 - Sinh chuỗi filter_complex FFmpeg THỐNG NHẤT cho cả preview 10 giây lẫn render cuối,
   để hai đường render không bao giờ lệch nhau về tham số.
 - Tạo cache key ổn định từ toàn bộ thông số compositing (dùng cho preview_key).
+- PROFILE MÀU: render khớp Live View, gồm screen blend, vignette nhẹ và BT.709 FULL range (pc)
+  để bản render không bị xám/xỉn trên trình phát bỏ qua cờ range (trước đây dùng TV range).
 
 Các loại hiệu ứng (effect_type):
 - screen_black: overlay nền đen, xóa vùng gần đen bằng colorkey.
@@ -24,6 +26,7 @@ Lưu ý khi sửa:
   gọi qua build_filter_complex(); không viết chuỗi filter overlay riêng.
 - Đổi tên/thêm khóa settings phải cập nhật effect_settings_cache_key() để preview cũ
   tự bị vô hiệu.
+- Khi đổi công thức màu phải tăng LIVE_VIEW_COLOR_PROFILE và cập nhật note này.
 """
 from __future__ import annotations
 
@@ -34,6 +37,14 @@ EFFECT_TYPES = ("screen_black", "chroma_key", "alpha", "normal")
 
 # Blend mode "normal" = overlay alpha thông thường; các mode còn lại dùng filter blend.
 BLEND_MODES = ("normal", "screen", "lighten", "overlay", "soft-light")
+# v4: chuyển output sang full-range (PC/sRGB) để render KHỚP live preview trên trình duyệt
+# (trước đây ép BT.709 TV-range làm bản render tối/xỉn hơn preview). Đổi profile này để
+# mọi preview/segment cache cũ (render theo công thức màu cũ) tự bị vô hiệu.
+LIVE_VIEW_COLOR_PROFILE = "browser-match-v4-fullrange"
+# Vignette khớp CSS live preview: radial-gradient(transparent 58%, rgba(0,0,0,0.2) 100%).
+# Đã đo thực nghiệm: vignette=PI/10 cho góc tối ~x0.81 (CSS ~x0.80) => giữ nguyên, đã đúng.
+LIVE_VIEW_VIGNETTE_FILTER = "vignette=PI/10"
+
 _FFMPEG_BLEND_NAMES = {
     "screen": "screen",
     "lighten": "lighten",
@@ -77,8 +88,10 @@ def normalize_effect_settings(raw: dict[str, Any] | None) -> dict[str, Any]:
     blend_mode = str(data.get("blend_mode") or "").strip().lower()
     if blend_mode not in BLEND_MODES:
         blend_mode = "normal"
-    # Chroma key và alpha luôn ghép bằng overlay alpha; blend mode chỉ có nghĩa
-    # với overlay nền đen (screen cổ điển) hoặc video thường.
+    # Live View ép screen_black sang CSS screen khi blend đang là normal.
+    # FFmpeg phải dùng cùng quy tắc để màu overlay không tối hơn Live View.
+    if effect_type == "screen_black" and blend_mode == "normal":
+        blend_mode = "screen"
     if effect_type in ("chroma_key", "alpha"):
         blend_mode = "normal"
     return {
@@ -98,7 +111,7 @@ def effect_settings_cache_key(settings: dict[str, Any] | None) -> str:
     """Chuỗi ổn định đại diện toàn bộ thông số compositing, dùng trong preview_key."""
     s = normalize_effect_settings(settings)
     return (
-        f"type={s['effect_type']}|blend={s['blend_mode']}|op={s['opacity']:.3f}|"
+        f"profile={LIVE_VIEW_COLOR_PROFILE}|type={s['effect_type']}|blend={s['blend_mode']}|op={s['opacity']:.3f}|"
         f"spd={s['speed']:.3f}|key={s['key_color']}|sim={s['chroma_similarity']:.3f}|"
         f"soft={s['chroma_softness']:.3f}|despill={s['despill']:.3f}|feather={s['edge_feather']:.2f}"
     )
@@ -190,7 +203,11 @@ def build_filter_complex(
 
     # Đuôi chung: (fps + text tùy chọn + yuv420p) -> [out].
     text_part = f"{text_filter}," if text_filter else ""
-    tail = f"fps={fps},{text_part}format=yuv420p[out]"
+    tail = (
+        f"fps={fps},{LIVE_VIEW_VIGNETTE_FILTER},{text_part}"
+        "scale=out_color_matrix=bt709:out_range=pc,format=yuv420p,"
+        "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=pc[out]"
+    )
 
     if use_blend:
         # Blend theo không gian RGB để screen/lighten/overlay/softlight ra màu đúng.
@@ -198,12 +215,12 @@ def build_filter_complex(
         return (
             f"[{base_input}]{base_filter},format=gbrp[base];"
             f"[{effect_input}]{fx_chain},format=gbrp[fx];"
-            f"[base][fx]blend=all_mode={mode}:all_opacity={s['opacity']:.4f}:shortest=1,"
+            f"[base][fx]blend=all_mode={mode}:all_opacity={s['opacity']:.4f}:shortest=0:repeatlast=1,"
             f"{tail}"
         )
     return (
         f"[{base_input}]{base_filter},format=rgba[base];"
         f"[{effect_input}]{fx_chain}[fx];"
-        f"[base][fx]overlay=0:0:shortest=1:format=auto,"
+        f"[base][fx]overlay=0:0:shortest=0:repeatlast=1:format=auto,"
         f"{tail}"
     )

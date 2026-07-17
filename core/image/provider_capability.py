@@ -1,6 +1,20 @@
 """
-Provider Capability Registry Module.
-Tracks the functional capabilities of the various image generation providers (e.g. SD Local, AI Horde, Pollinations).
+AI FILE NOTE - PROVIDER CAPABILITY REGISTRY
+Chức năng chính:
+- Theo dõi khả năng (capabilities) và trạng thái sức khỏe của các provider sinh ảnh (SD Local, AI Horde, Pollinations, HuggingFace).
+- Cho Core xác định động provider nào khả dụng và hỗ trợ tính năng gì (txt2img, image_upscale...) trước khi thực thi.
+- Đăng ký sẵn các provider mặc định của hệ thống ở cuối file.
+Đầu vào chính:
+- provider_name, capabilities (dict {tên_capability: bool/str}), status ("available"/"degraded"/"disabled").
+Đầu ra chính:
+- Trạng thái provider (str), kết quả kiểm tra capability (bool).
+API được file khác sử dụng:
+- Lớp ProviderCapabilityRegistry: register_provider(), update_status(), get_provider_status(), has_capability().
+Phụ thuộc quan trọng:
+- logging (thuần Python, không phụ thuộc ngoài).
+Lưu ý khi sửa:
+- _registry là state cấp lớp (class-level) dùng chung toàn tiến trình; lưu ý khi thay đổi.
+- has_capability() trả False nếu provider ở trạng thái "disabled" bất kể capability khai báo.
 """
 import logging
 

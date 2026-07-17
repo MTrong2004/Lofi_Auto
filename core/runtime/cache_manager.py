@@ -1,6 +1,20 @@
 """
-Cache Manager Module.
-Provides SHA-256 asset content hash caching, validation, deduplication, and database tracking for generated assets.
+AI FILE NOTE - CACHE MANAGER
+Chức năng chính:
+- Tính SHA-256 nội dung file và ghép thành input_hash đại diện cho đầu vào + cấu hình + phiên bản code + hash model của một bước (dùng cache/validation/dedup asset).
+- Định nghĩa đồ thị phụ thuộc giữa các module (audio/image/layers/preview/render/output) và vô hiệu hóa (invalidate) đệ quy lan truyền xuống hạ nguồn, cập nhật DB + state_history + snapshot dự án.
+Đầu vào chính:
+- Danh sách Path file đầu vào, dict cấu hình, producer_version, model_hashes; project_id + module_name để invalidate.
+Đầu ra chính:
+- Chuỗi hash hex; cập nhật bảng project_modules và state_history trong SQLite; snapshot JSON dự án.
+API được file khác sử dụng:
+- CacheManager.get_file_sha256, calculate_input_hash, get_downstream_modules, invalidate_module.
+Phụ thuộc quan trọng:
+- config, core.runtime.db (get_db_connection), core.runtime.project_manager (ProjectManager), sqlite3, hashlib.
+Lưu ý khi sửa:
+- Khi thay đổi cách tính hash phải sắp xếp key/file ổn định (sort) để hash nhất quán giữa các lần chạy.
+- invalidate_module chỉ ghi state_history khi trạng thái thực sự đổi; giữ nguyên logic tránh ghi trùng lịch sử.
+- Khối __main__ chỉ là test nhanh cơ chế invalidation, không chạy trong pipeline.
 """
 import os
 import sys

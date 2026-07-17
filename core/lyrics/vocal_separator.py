@@ -1,6 +1,20 @@
 """
-CORE MODULE: VOCAL SEPARATOR
-Tách giọng hát (vocal) và nhạc nền (instrumental) từ file nhạc gốc sử dụng Demucs.
+AI FILE NOTE - VOCAL SEPARATOR
+Chức năng chính:
+- Tách vocal và instrumental (nhạc nền) từ file nhạc gốc bằng Demucs (chạy qua subprocess `demucs.separate` với --two-stems).
+- Có cache: nếu file kết quả đã tồn tại và đủ lớn thì dùng lại, bỏ qua tách.
+- Parse log Demucs để báo tiến độ; dọn thư mục tạm sau khi xong.
+Đầu vào chính:
+- input_audio (Path file nhạc), output_dir (Path), model (mặc định "htdemucs"), progress_callback tùy chọn.
+Đầu ra chính:
+- tuple (vocal_path, instrumental_path): <stem>_vocals.wav và <stem>_instrumental.wav.
+API được file khác sử dụng:
+- separate_vocals(), is_demucs_installed().
+Phụ thuộc quan trọng:
+- demucs (chạy qua subprocess), torch (gián tiếp), shutil, subprocess, logging.
+Lưu ý khi sửa:
+- Demucs chạy trong subprocess để không nạp torch vào tiến trình chính; giữ nguyên.
+- Cấu trúc thư mục đầu ra Demucs là <temp>/<model>/<stem>/vocal.wav|no_vocals.wav; sửa đường dẫn phải khớp cấu trúc này.
 """
 from __future__ import annotations
 

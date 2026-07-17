@@ -4,6 +4,7 @@ AI FILE NOTE - STEP 1: MUSIC HUNTER
 Chức năng chính:
 - Tìm nhạc ứng viên từ YouTube/SoundCloud bằng yt-dlp.
 - Đọc metadata, tạo URL/file nghe thử, tải audio và kiểm tra chất lượng.
+- Nhập nhạc từ file local (tải tay từ Pixabay/Chosic/StockTune...) vào cùng pipeline.
 - Lọc sơ bộ nguy cơ bản quyền theo blacklist; đây không phải xác nhận pháp lý.
 - Lưu asset, trạng thái workflow và lịch sử trend YouTube/Last.fm vào SQLite.
 - Tổng hợp điểm xu hướng đa nền tảng khi có dữ liệu thật.
@@ -17,6 +18,7 @@ Chức năng chính:
 API được file khác sử dụng:
 - fetch_candidate_tracks(), fetch_track_metadata_by_url()
 - get_stream_url(), get_preview_audio_path(), download_track()
+- import_local_track(), list_local_imports()
 - capture_youtube_trend_snapshot(), fetch_lastfm_chart(), enrich_tracks_with_lastfm()
 - build_cross_platform_trend(), is_license_safe(), run_step1()
 
@@ -215,7 +217,7 @@ def _percentile_score(values: list[float], value: float) -> float:
     return 100.0 * (below + max(equal - 1, 0) / 2) / (len(ordered) - 1)
 
 
-TREND_RUNTIME_DIR = config.BASE_DIR / "data" / "trend_runtime"
+TREND_RUNTIME_DIR = config.BASE_DIR / "data" / "cache" / "trend_runtime"
 TREND_CACHE_DIR = TREND_RUNTIME_DIR / "cache"
 TREND_USAGE_FILE = TREND_RUNTIME_DIR / "youtube_search_usage.json"
 LASTFM_CACHE_FILE = TREND_CACHE_DIR / "lastfm_global_chart.json"
@@ -673,7 +675,7 @@ def get_preview_audio_path(track_url: str, track_id: str) -> Path:
     if not track_url:
         raise ValueError("Track không có URL nguồn.")
     safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in (track_id or "preview"))
-    preview_dir = config.BASE_DIR / "data" / "previews" / "music"
+    preview_dir = config.BASE_DIR / "data" / "cache" / "previews" / "music"
     preview_dir.mkdir(parents=True, exist_ok=True)
     preview_path = preview_dir / f"{safe_id}.mp3"
     if preview_path.exists() and preview_path.stat().st_size > 0:
@@ -734,7 +736,7 @@ def fetch_track_metadata_by_url(url: str) -> dict:
     }
 
 
-TREND_DB_PATH = config.BASE_DIR / "data" / "music_trends.sqlite3"
+TREND_DB_PATH = getattr(config, "TREND_DB_PATH", config.BASE_DIR / "data" / "database" / "music_trends.sqlite3")
 
 
 def _trend_connection():
@@ -1405,41 +1407,187 @@ def download_track(track: dict, project_id: str = None) -> Path:
     store._append_used_track(track["track_id"])
     
     # --- ĐẤU NỐI DATABASE SQLITE (NẾU CÓ DỰ ÁN) ---
-    if project_id:
-        conn = get_db_connection()
-        try:
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            asset_id = f"audio_{track['track_id']}"
-            
-            with conn:
-                # 1. Đăng ký Asset
-                conn.execute("""
-                INSERT OR REPLACE INTO assets (asset_id, project_id, path, sha256, mime_type, size_bytes, processing_status, review_status, created_at_utc)
-                VALUES (?, ?, ?, ?, 'audio/mp4', ?, 'verified', 'approved', ?);
-                """, (asset_id, project_id, f"data/input_audio/{expected_path.name}", file_sha256, file_size, now_str))
-                
-                # 2. Đăng ký Rights Review
-                rights_id = f"rights_{track['track_id']}"
-                conn.execute("""
-                INSERT OR REPLACE INTO error_records (error_id, job_id, error_code, category, step, message, retryable, fallback_available, suggested_action, occurred_at_utc)
-                VALUES (?, NULL, 'RIGHTS_ESTABLISHED', 'rights', 'music_hunter', ?, 0, 0, 'No action needed', ?);
-                """, (rights_id, f"Established rights review for track {track['track_id']}", now_str))
-                
-            # 3. Cập nhật module trạng thái cho dự án
-            ProjectManager.update_workflow_status(
-                project_id=project_id,
-                module_name="audio",
-                processing_status="verified",
-                review_status="approved",
-                input_hash=file_sha256,
-                output_hash=file_sha256,
-                reason=f"Audio imported successfully. Duration: {duration:.1f}s, Loudness: {integrated_loudness:.1f} LUFS, Peak: {true_peak:.1f} dBTP",
-                actor="music_hunter"
-            )
-        finally:
-            conn.close()
-            
+    _register_audio_asset(
+        track["track_id"], expected_path, file_sha256, file_size,
+        duration, integrated_loudness, true_peak, project_id,
+    )
+
     return expected_path
+
+
+def _register_audio_asset(track_id: str, expected_path: Path, file_sha256: str, file_size: int,
+                          duration: float, integrated_loudness: float, true_peak: float,
+                          project_id: str = None) -> None:
+    """Đăng ký asset audio + rights review vào SQLite và cập nhật workflow (dùng chung download/import)."""
+    if not project_id:
+        return
+    conn = get_db_connection()
+    try:
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        asset_id = f"audio_{track_id}"
+
+        with conn:
+            # 1. Đăng ký Asset
+            conn.execute("""
+            INSERT OR REPLACE INTO assets (asset_id, project_id, path, sha256, mime_type, size_bytes, processing_status, review_status, created_at_utc)
+            VALUES (?, ?, ?, ?, 'audio/mp4', ?, 'verified', 'approved', ?);
+            """, (asset_id, project_id, f"data/input_audio/{expected_path.name}", file_sha256, file_size, now_str))
+
+            # 2. Đăng ký Rights Review
+            rights_id = f"rights_{track_id}"
+            conn.execute("""
+            INSERT OR REPLACE INTO error_records (error_id, job_id, error_code, category, step, message, retryable, fallback_available, suggested_action, occurred_at_utc)
+            VALUES (?, NULL, 'RIGHTS_ESTABLISHED', 'rights', 'music_hunter', ?, 0, 0, 'No action needed', ?);
+            """, (rights_id, f"Established rights review for track {track_id}", now_str))
+
+        # 3. Cập nhật module trạng thái cho dự án
+        ProjectManager.update_workflow_status(
+            project_id=project_id,
+            module_name="audio",
+            processing_status="verified",
+            review_status="approved",
+            input_hash=file_sha256,
+            output_hash=file_sha256,
+            reason=f"Audio imported successfully. Duration: {duration:.1f}s, Loudness: {integrated_loudness:.1f} LUFS, Peak: {true_peak:.1f} dBTP",
+            actor="music_hunter"
+        )
+    finally:
+        conn.close()
+
+
+LOCAL_IMPORT_EXTENSIONS = (".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".opus")
+
+
+def import_local_track(source_path, title: str, author: str = "",
+                       source_label: str = "Local File", license_text: str = "",
+                       original_url: str = "", project_id: str = None) -> dict:
+    """
+    Nhập file nhạc local (tải tay từ Pixabay/Chosic/StockTune...) vào pipeline.
+
+    Chuẩn hóa sang <track_id>.m4a trong INPUT_AUDIO_DIR, kiểm duyệt bằng MediaProbe,
+    ghi metadata theo schema track_metadata và đăng ký DB giống download_track.
+    Trả về dict track tương thích với UI (dùng được với _select_track / remix / render).
+    """
+    source_path = Path(source_path)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Không tìm thấy file: {source_path}")
+    if source_path.suffix.lower() not in LOCAL_IMPORT_EXTENSIONS:
+        raise ValueError(f"Định dạng {source_path.suffix} chưa hỗ trợ. Dùng: {', '.join(LOCAL_IMPORT_EXTENSIONS)}")
+
+    # track_id ổn định theo nội dung file -> nhập lại cùng file không tạo bản trùng.
+    source_sha256 = CacheManager.get_file_sha256(source_path)
+    track_id = f"local_{source_sha256[:12]}"
+    expected_path = config.INPUT_AUDIO_DIR / f"{track_id}.m4a"
+
+    if not expected_path.exists():
+        if source_path.suffix.lower() == ".m4a":
+            import shutil
+            shutil.copy2(source_path, expected_path)
+        else:
+            cmd_ffmpeg = [
+                "ffmpeg", "-y",
+                "-i", str(source_path),
+                "-vn",
+                "-c:a", "aac",
+                "-b:a", "192k",
+                str(expected_path)
+            ]
+            logger.info(f"[LocalImport] Convert sang m4a: {source_path.name} -> {expected_path.name}")
+            subprocess.run(cmd_ffmpeg, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, check=True)
+
+    # --- KIỂM DUYỆT CHẤT LƯỢNG (giống download_track) ---
+    probe_info = MediaProbe.probe_media(expected_path)
+    if not probe_info["audio_streams"]:
+        expected_path.unlink(missing_ok=True)
+        raise ValueError("File không chứa luồng âm thanh hợp lệ (AUD-ACC-001).")
+
+    duration = probe_info["duration_seconds"]
+    file_sha256 = CacheManager.get_file_sha256(expected_path)
+    file_size = expected_path.stat().st_size
+
+    try:
+        loud_info = MediaProbe.get_loudness_and_peak(expected_path)
+        integrated_loudness = loud_info["integrated_loudness"]
+        true_peak = loud_info["true_peak"]
+    except Exception as e:
+        logger.warning(f"[LocalImport] Không đo được độ lớn âm thanh: {e}")
+        integrated_loudness = 0.0
+        true_peak = 0.0
+
+    title = (title or "").strip() or source_path.stem
+    author = (author or "").strip() or "Unknown"
+    license_text = (license_text or "").strip() or "Người dùng tự xác nhận quyền sử dụng (nhập tay)"
+    url = (original_url or "").strip() or f"local://{source_path.name}"
+
+    track_meta = {
+        "schema_name": "track_metadata",
+        "schema_version": 1,
+        "track_id": track_id,
+        "title": title,
+        "author": author,
+        "source": source_label or "Local File",
+        "url": url,
+        "duration_seconds": duration,
+        "license": license_text,
+        "views": 0,
+        "likes": 0,
+        "relevance_score": 10.0,
+        # Nguồn nhập tay: điểm tin cậy trung bình vì license do người dùng khai.
+        "source_trust_score": 60.0,
+        "risk_reasons": [],
+        "download_status": "downloaded"
+    }
+    validate_data_schema(track_meta, "track_metadata")
+
+    meta_path = config.METADATA_DIR / f"{track_id}.json"
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(track_meta, f, ensure_ascii=False, indent=2)
+    store._append_used_track(track_id)
+
+    _register_audio_asset(track_id, expected_path, file_sha256, file_size,
+                          duration, integrated_loudness, true_peak, project_id)
+
+    logger.info(f"[LocalImport] Đã nhập '{title}' ({duration:.0f}s) -> {expected_path.name}")
+    return {
+        "track_id": track_id,
+        "title": title,
+        "author": author,
+        "source": track_meta["source"],
+        "url": url,
+        "license": license_text,
+        "duration_seconds": duration,
+        "views": 0,
+        "likes": 0,
+        "local_import": True,
+    }
+
+
+def list_local_imports() -> list[dict]:
+    """Liệt kê các bài đã nhập từ file local (metadata local_*.json còn kèm file m4a)."""
+    tracks = []
+    for meta_path in sorted(config.METADATA_DIR.glob("local_*.json"),
+                            key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        track_id = str(meta.get("track_id") or "")
+        if not track_id or not (config.INPUT_AUDIO_DIR / f"{track_id}.m4a").is_file():
+            continue
+        tracks.append({
+            "track_id": track_id,
+            "title": meta.get("title") or track_id,
+            "author": meta.get("author") or "Unknown",
+            "source": meta.get("source") or "Local File",
+            "url": meta.get("url") or "",
+            "license": meta.get("license") or "",
+            "duration_seconds": float(meta.get("duration_seconds") or 0),
+            "views": 0,
+            "likes": 0,
+            "local_import": True,
+        })
+    return tracks
 
 def run_step1(project_id: str = None) -> dict:
     """Hàm chạy tự động chính."""

@@ -1,0 +1,32 @@
+{
+  "schema_name": "output_manifest",
+  "schema_version": 1,
+  "project_id": "lofi_default_prj",
+  "video_path": "data/output_final/lofi_default_prj_20260717_212602.mp4",
+  "video_sha256": "5fb86ec096fc4fe0778d6e50858db23e3c9c73f1c4973760977fbd00a4e8c483",
+  "duration_seconds": 10.0,
+  "resolution": "1920x1080",
+  "fps": {
+    "numerator": 24,
+    "denominator": 1
+  },
+  "video_codec": "h264",
+  "requested_video_encoder": "libx264",
+  "actual_video_encoder": "libx264",
+  "video_encoder_fallback_reason": null,
+  "audio_codec": "aac",
+  "audio_sample_rate_hz": 48000,
+  "pixel_format": "yuv420p",
+  "color_metadata": {
+    "primaries": "bt709",
+    "transfer": "bt709",
+    "space": "bt709",
+    "range": "tv"
+  },
+  "track_id": "gJAbDSse5WM",
+  "app_version": "4.5.0",
+  "config_hash": "4a44dc15364204a80fe80e9039455cc1608281820fe2b24f1e5233ade6af1dd5",
+  "input_hash": "5fb86ec096fc4fe0778d6e50858db23e",
+  "producer_version": "4.5.0",
+  "rendered_at_utc": "2026-07-17T21:26:03Z"
+}

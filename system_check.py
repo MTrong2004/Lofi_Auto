@@ -1,9 +1,20 @@
 """
-Kiểm tra cấu hình máy (GPU/VRAM/RAM) và đề xuất thông số chạy SD local phù hợp.
-Chạy độc lập: python system_check.py
-Hoặc gọi run_check() từ main.py trước khi kích hoạt nhánh SD local.
-
-Yêu cầu: pip install gputil psutil --break-system-packages
+AI FILE NOTE - SYSTEM_CHECK (KIỂM TRA PHẦN CỨNG)
+Chức năng chính:
+- Kiểm tra cấu hình máy (GPU NVIDIA/VRAM, RAM, CPU) và đề xuất thông số chạy Stable Diffusion local phù hợp theo mức VRAM.
+- Đọc GPU qua nvidia-smi (không cần thư viện ngoài), RAM/CPU qua psutil.
+- Chạy độc lập `python system_check.py` (in ra console) hoặc gọi run_check() từ main.py/app_server trước khi bật nhánh SD local.
+Đầu vào chính:
+- Không có tham số; đọc trực tiếp thông tin phần cứng hệ thống. run_check nhận cờ verbose.
+Đầu ra chính:
+- Dict {gpu, ram, cpu, recommendation}; recommendation gồm can_run_sd_local, checkpoint, resolution, flags, ram_warning.
+API được file khác sử dụng:
+- `run_check(verbose=True) -> dict` (dùng bởi app_server /api/system/check). Phụ trợ: get_gpu_info, get_ram_info, get_cpu_info, recommend_sd_config.
+Phụ thuộc quan trọng:
+- Thư viện chuẩn (logging, shutil, subprocess) + psutil (import cục bộ trong hàm). GPU cần nvidia-smi có trong PATH.
+Lưu ý khi sửa:
+- Không có GPU NVIDIA -> get_gpu_info trả None và khuyến nghị chỉ dùng Pollinations (can_run_sd_local=False); giữ nhánh này vì máy mục tiêu thường không GPU.
+- Ngưỡng VRAM (4/6/8/12GB) là tham số quyết định checkpoint và flag; sửa cẩn thận để không đề xuất vượt khả năng máy.
 """
 import logging
 import shutil

@@ -4,6 +4,9 @@ Chức năng chính:
 - Tiền xử lý nhạc nền thô sang chuẩn màu âm Lofi: làm chậm tempo (0.88x), lọc dải thấp (lowpass 1800Hz), căn chỉnh mức âm lượng (Target LUFS).
 - Tạo chuỗi nối âm (crossfade) tạo vòng lặp nhạc vô hạn (seamless loop).
 - Tạo và hòa trộn (mix) âm thanh môi trường (tiếng mưa rơi, tiếng vinyl crackle) từ code.
+- REMIX tham số hoá (apply_remix/build_remix_filter): EQ đáy/đỉnh, tempo, đổi cao độ (pitch, tự bù
+  tempo giữ thời lượng), lowpass, reverb, compressor, normalize.
+- NỐI NHIỀU BÀI (concat_tracks): ghép nhiều bài khác nhau thành 1 audio-master dài, crossfade mượt.
 Đầu vào chính:
 - File nhạc đầu vào, thời lượng mong muốn, cấu hình vibe (clean, ambient, crackly).
 Đầu ra chính:
@@ -38,14 +41,17 @@ class AudioProcessor:
     """
 
     @classmethod
-    def apply_lofi_character(cls, input_path: Path, output_path: Path, tempo: float = None) -> Path:
+    def apply_lofi_character(cls, input_path: Path, output_path: Path, tempo: float = None,
+                             normalize: bool = True) -> Path:
         """
-        Áp chất âm lofi đặc trưng lên bài nhạc:
-        - atempo: chậm lại (slowed) theo config.AUDIO_TEMPO_RATE - chữ ký của nhạc lofi
-        - lowpass 11kHz + treble giảm nhẹ: âm ấm, bớt chói như băng cối
+        Áp chất âm lofi đặc trưng lên bài nhạc trong MỘT lần FFmpeg duy nhất:
+        - atempo: chậm lại (slowed) theo config.AUDIO_TEMPO_RATE
+        - lowpass 11kHz + treble giảm nhẹ: âm ấm, bớt chói
         - highpass 40Hz: cắt rumble dưới đáy
         - bass boost nhẹ 120Hz: đầy đặn
-        - compressor nhẹ: âm lượng đều, dễ nghe lâu
+        - acompressor nhẹ: âm lượng đều, dễ nghe lâu
+        - dynaudnorm (nếu normalize=True): chuẩn hóa loudness streaming, KHÔNG cần
+          quét toàn bộ file như loudnorm — loại bỏ điểm khựng 11s của pipeline cũ.
         """
         input_path = Path(input_path)
         output_path = Path(output_path)
@@ -65,6 +71,11 @@ class AudioProcessor:
             "treble=g=-1.5:f=7500,"
             "acompressor=threshold=-18dB:ratio=2:attack=20:release=250:makeup=2dB"
         )
+        # dynaudnorm: chuẩn hóa loudness theo cửa sổ 150 frame (streaming),
+        # không cần two-pass hay quét toàn file như loudnorm — nhanh hơn ~3x.
+        if normalize:
+            filter_chain += ",dynaudnorm=f=150:g=15:p=0.95"
+
         cmd = [
             "ffmpeg", "-y",
             "-i", str(input_path),
@@ -72,7 +83,10 @@ class AudioProcessor:
             "-c:a", "aac", "-b:a", "192k",
             str(output_path)
         ]
-        logger.info(f"[AudioProcessor] Đang áp chất âm lofi (tempo {tempo}x, lowpass 11kHz)...")
+        logger.info(
+            f"[AudioProcessor] Áp chất âm lofi (tempo {tempo}x, lowpass 11kHz"
+            f"{', dynaudnorm' if normalize else ''})..."
+        )
         result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise AudioProcessorError(f"Áp chất âm lofi thất bại: {result.stderr}")
@@ -121,8 +135,11 @@ class AudioProcessor:
     @classmethod
     def normalize_audio(cls, input_path: Path, output_path: Path, target_lufs: float = -15.0) -> Path:
         """
-        Chuẩn hóa âm lượng LUFS của file nhạc chính (Mục 503).
-        Đích mặc định: -15 LUFS, True Peak: -1.0 dBTP.
+        Chuẩn hóa âm lượng của file nhạc (Mục 503).
+        Dùng dynaudnorm thay loudnorm để chạy streaming (không quét toàn file),
+        tránh điểm khựng ~11s ở pipeline clean vibe.
+        target_lufs được giữ lại làm tham số API nhưng dynaudnorm tự điều chỉnh
+        theo cửa sổ frame nên không cần LUFS target tuyệt đối.
         """
         input_path = Path(input_path)
         output_path = Path(output_path)
@@ -132,8 +149,9 @@ class AudioProcessor:
             
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # FFmpeg loudnorm filter
-        filter_str = f"loudnorm=I={target_lufs}:TP=-1.0:LRA=11:print_format=json"
+        # dynaudnorm: streaming loudness normalization, không cần full-file scan như loudnorm.
+        # f=150: cửa sổ 150 frame (~3s Gaussian), g=15: max gain 15dB, p=0.95: peak 95%.
+        filter_str = "dynaudnorm=f=150:g=15:p=0.95"
         
         cmd = [
             "ffmpeg", "-y",
@@ -144,7 +162,7 @@ class AudioProcessor:
             str(output_path)
         ]
         
-        logger.info(f"[AudioProcessor] Đang chuẩn hóa âm lượng file {input_path.name} sang {target_lufs} LUFS...")
+        logger.info(f"[AudioProcessor] Chuẩn hóa âm lượng {input_path.name} (dynaudnorm)...")
         result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
         
         if result.returncode != 0:
@@ -261,6 +279,135 @@ class AudioProcessor:
         if result.returncode != 0:
             raise AudioProcessorError(f"Lặp nhạc với crossfade thất bại: {result.stderr}")
             
+        return output_path
+
+    @staticmethod
+    def _clampf(value, low, high, fallback=0.0):
+        try:
+            return max(low, min(float(value), high))
+        except (TypeError, ValueError):
+            return fallback
+
+    @staticmethod
+    def _atempo_chain(tempo: float) -> list[str]:
+        """Phân rã hệ số tempo thành chuỗi atempo hợp lệ (mỗi filter chỉ nhận 0.5..2.0)."""
+        t = max(0.25, min(4.0, float(tempo)))
+        parts = []
+        while t < 0.5 - 1e-9:
+            parts.append(0.5); t /= 0.5
+        while t > 2.0 + 1e-9:
+            parts.append(2.0); t /= 2.0
+        parts.append(t)
+        return [f"atempo={p:.6f}" for p in parts]
+
+    @classmethod
+    def build_remix_filter(cls, params: dict | None) -> str:
+        """Dựng chuỗi filter FFmpeg cho remix từ dict tham số (dùng chung cho render + preview).
+
+        params (mọi khóa tùy chọn):
+        - tempo (0.5..2.0): nhanh/chậm, GIỮ cao độ.
+        - pitch_semitones (-12..12): đổi cao độ; tự bù tempo để không đổi thời lượng.
+        - bass_gain / treble_gain (dB, -15..15): EQ đáy/đỉnh.
+        - lowpass_hz (0=off, 500..20000): cắt cao (âm ấm kiểu lofi).
+        - reverb (0..1): độ vang (aecho).
+        - compress (bool), normalize (bool).
+        """
+        p = params or {}
+        filters: list[str] = []
+
+        # Đổi cao độ (pitch) GIỮ NGUYÊN thời lượng bằng rubberband (chất lượng cao, 1 filter).
+        pitch = cls._clampf(p.get("pitch_semitones"), -12.0, 12.0, 0.0)
+        if abs(pitch) > 1e-3:
+            ratio = 2.0 ** (pitch / 12.0)
+            filters.append(f"rubberband=pitch={ratio:.6f}")
+
+        # Tempo (nhanh/chậm) GIỮ cao độ bằng atempo (đã kiểm: 0.8x -> 1.25x thời lượng).
+        tempo = cls._clampf(p.get("tempo"), 0.5, 2.0, 1.0)
+        if abs(tempo - 1.0) > 1e-3:
+            filters.extend(cls._atempo_chain(tempo))
+
+        bass = cls._clampf(p.get("bass_gain"), -15.0, 15.0, 0.0)
+        if abs(bass) > 1e-3:
+            filters.append(f"bass=g={bass:.2f}:f=110:w=0.6")
+        treble = cls._clampf(p.get("treble_gain"), -15.0, 15.0, 0.0)
+        if abs(treble) > 1e-3:
+            filters.append(f"treble=g={treble:.2f}:f=7500")
+        lowpass = cls._clampf(p.get("lowpass_hz"), 0.0, 20000.0, 0.0)
+        if lowpass >= 500.0:
+            filters.append(f"lowpass=f={int(lowpass)}")
+
+        if bool(p.get("compress", True)):
+            filters.append("acompressor=threshold=-18dB:ratio=2:attack=20:release=250:makeup=2dB")
+
+        reverb = cls._clampf(p.get("reverb"), 0.0, 1.0, 0.0)
+        if reverb > 1e-3:
+            delay_ms = int(40 + 80 * reverb)
+            decay = 0.3 + 0.5 * reverb
+            filters.append(f"aecho=0.8:0.9:{delay_ms}:{decay:.2f}")
+
+        if bool(p.get("normalize", True)):
+            filters.append("dynaudnorm=f=150:g=15:p=0.95")
+
+        return ",".join(filters) if filters else "anull"
+
+    @classmethod
+    def apply_remix(cls, input_path: Path, output_path: Path, params: dict | None = None) -> Path:
+        """Áp remix tham số hoá (EQ/tempo/pitch/reverb) trong MỘT lần FFmpeg. Xem build_remix_filter."""
+        input_path = Path(input_path)
+        output_path = Path(output_path)
+        if not input_path.is_file():
+            raise AudioProcessorError(f"Không tìm thấy file âm thanh đầu vào: {input_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        filter_chain = cls.build_remix_filter(params)
+        cmd = [
+            "ffmpeg", "-y", "-i", str(input_path),
+            "-af", filter_chain, "-c:a", "aac", "-b:a", "192k", str(output_path),
+        ]
+        logger.info(f"[AudioProcessor] Remix âm thanh: {filter_chain}")
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            raise AudioProcessorError(f"Remix âm thanh thất bại: {result.stderr}")
+        return output_path
+
+    @classmethod
+    def concat_tracks(cls, input_paths: list, output_path: Path,
+                      crossfade_seconds: float = 3.0, target_duration: float = None) -> Path:
+        """Nối NHIỀU bài khác nhau thành một audio-master dài, crossfade mượt giữa các bài (Mục HM5).
+
+        Tổng quát hoá loop_audio() cho các file KHÁC nhau. Nếu chỉ 1 bài -> copy.
+        target_duration (tuỳ chọn): cắt bớt nếu đặt; nếu None -> lấy trọn tổng độ dài các bài.
+        """
+        inputs = [Path(p) for p in (input_paths or []) if Path(p).is_file()]
+        if not inputs:
+            raise AudioProcessorError("Danh sách bài để nối rỗng hoặc không tồn tại.")
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if len(inputs) == 1:
+            shutil.copy(str(inputs[0]), str(output_path))
+            return output_path
+
+        cf = max(0.5, float(crossfade_seconds))
+        cmd = ["ffmpeg", "-y"]
+        for p in inputs:
+            cmd.extend(["-i", str(p)])
+        # acrossfade nối tiếp giữa các bài khác nhau: [0][1]->[a1]; [a1][2]->[a2]; ...
+        parts = []
+        last_out = "[0:a]"
+        for i in range(1, len(inputs)):
+            next_out = f"[a{i}]"
+            parts.append(f"{last_out}[{i}:a]acrossfade=d={cf}:c1=tri:c2=tri{next_out}")
+            last_out = next_out
+        cmd.extend(["-filter_complex", ";".join(parts), "-map", last_out])
+        if target_duration:
+            cmd.extend(["-t", f"{float(target_duration):.3f}"])
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", str(output_path)])
+
+        logger.info(f"[AudioProcessor] Nối {len(inputs)} bài (crossfade {cf}s) thành audio-master...")
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            raise AudioProcessorError(f"Nối nhiều bài thất bại: {result.stderr}")
         return output_path
 
     @classmethod

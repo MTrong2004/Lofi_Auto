@@ -1,6 +1,21 @@
 """
-Cấu hình chung cho toàn bộ pipeline.
-Đọc từ biến môi trường (.env) để không lộ key khi đẩy code lên git.
+AI FILE NOTE - CONFIG (CẤU HÌNH TRUNG TÂM)
+Chức năng chính:
+- Cấu hình chung cho toàn bộ pipeline, đọc từ biến môi trường (.env qua _load_dotenv) để không lộ API key khi đẩy code lên git.
+- Định nghĩa đường dẫn thư mục làm việc (data/*, DB, cache, output...) và tự tạo thư mục khi import.
+- Gom mọi hằng số/tham số: nguồn nhạc, thị trường & RPM YouTube, provider ảnh (Pollinations/AIHorde/HuggingFace/Cloudflare/SD local), LLM viết prompt, phân tích/tách lớp cảnh, thông số FFmpeg/render, upload YouTube, thư viện hiệu ứng Pixabay và chữ động.
+Đầu vào chính:
+- Biến môi trường trong file .env cùng thư mục (KEY=VALUE, hỗ trợ utf-8-sig bỏ BOM).
+Đầu ra chính:
+- Các biến module cấp cao (BASE_DIR, *_DIR, *_API_KEY, IMAGE_*, VIDEO_*, YOUTUBE_*, ...) và các thư mục được mkdir sẵn.
+API được file khác sử dụng:
+- Import trực tiếp `import config` rồi đọc thuộc tính; nhiều file dùng `getattr(config, ...)`. Một số biến bị ghi đè lúc chạy (VIDEO_DURATION_SECONDS, ENABLE_YOUTUBE_UPLOAD, SD_LOCAL_API_URL, PROMPT_API_*).
+Phụ thuộc quan trọng:
+- Chỉ dùng thư viện chuẩn (os, pathlib). Không import module nội bộ khác để tránh vòng lặp import.
+Lưu ý khi sửa:
+- File này có side effect khi import (tạo thư mục, nạp .env); giữ nhẹ và không nạp thư viện nặng.
+- Nhiều giá trị được ép về khoảng an toàn qua max/min; giữ pattern này khi thêm biến từ env.
+- Không hard-code API key; luôn đọc qua os.getenv với mặc định rỗng.
 """
 import os
 from pathlib import Path
@@ -26,12 +41,20 @@ _load_dotenv(Path(__file__).parent / ".env")
 # --- Đường dẫn thư mục làm việc ---
 BASE_DIR = Path(__file__).parent
 INPUT_AUDIO_DIR = BASE_DIR / "data" / "input_audio"
-TEMP_IMAGE_DIR = BASE_DIR / "data" / "temp_image"
+CACHE_DIR = BASE_DIR / "data" / "cache"
+TEMP_IMAGE_DIR = CACHE_DIR / "temp_image"
 EFFECTS_DIR = BASE_DIR / "data" / "effects"       # video mưa, bụi, đĩa than (asset tĩnh)
 OUTPUT_DIR = BASE_DIR / "data" / "output_final"
-METADATA_DIR = BASE_DIR / "data" / "metadata"      # log license nhạc, ảnh
+METADATA_DIR = CACHE_DIR / "metadata"      # log license nhạc, ảnh
+DB_DIR = BASE_DIR / "data" / "database"
+CONFIG_DIR = BASE_DIR / "data" / "config"
 
-for d in [INPUT_AUDIO_DIR, TEMP_IMAGE_DIR, EFFECTS_DIR, OUTPUT_DIR, METADATA_DIR]:
+DB_PATH = DB_DIR / "lofi_automation.db"
+TREND_DB_PATH = DB_DIR / "music_trends.sqlite3"
+PROMPT_SETTINGS_FILE = CONFIG_DIR / "prompt_api_settings.json"
+SETTINGS_FILE = CONFIG_DIR / "settings.json"
+
+for d in [INPUT_AUDIO_DIR, CACHE_DIR, TEMP_IMAGE_DIR, EFFECTS_DIR, OUTPUT_DIR, METADATA_DIR, DB_DIR, CONFIG_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # --- API khám phá xu hướng nhạc (Bước 1) ---
@@ -196,13 +219,29 @@ PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "").strip()
 HUGGINGFACE_TOKEN = os.getenv("HUGGINGFACE_TOKEN", "")
 HUGGINGFACE_MODEL = os.getenv("HUGGINGFACE_MODEL", "stabilityai/stable-diffusion-xl-base-1.0")
 
-# LLM viết prompt ảnh theo bài nhạc (OpenAI-compatible chat completions).
-# Mặc định: text.pollinations.ai miễn phí không cần key.
-# Có key riêng (Groq/OpenRouter/Gemini...) thì đổi URL + KEY + MODEL trong .env.
-PROMPT_API_URL = os.getenv("PROMPT_API_URL", "https://text.pollinations.ai/openai")
-PROMPT_API_KEY = os.getenv("PROMPT_API_KEY", "")
-PROMPT_API_MODEL = os.getenv("PROMPT_API_MODEL", "openai")
+# LLM cho mọi tác vụ văn bản (prompt ảnh, hiệu ứng, chữ, caption, dịch) — OpenAI-compatible.
+# Mặc định trỏ Gemini (endpoint OpenAI-compat) để KHỚP với UI review_app.
+# Cần GEMINI/PROMPT_API_KEY để dùng Gemini; nếu THIẾU KEY, hàm gọi LLM tự bỏ qua Gemini và
+# rơi xuống provider dự phòng (Pollinations miễn phí) — xem utils/helpers.call_llm_chat.
+PROMPT_API_URL = os.getenv(
+    "PROMPT_API_URL", "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+)
+PROMPT_API_KEY = os.getenv("PROMPT_API_KEY", os.getenv("GEMINI_API_KEY", ""))
+# Mặc định gemini-3.1-flash-lite: quota ngày cao nhất trong nhóm Flash free-tier
+# (~15 RPM, ~500 RPD) -> hợp automation gọi LLM nhiều lần/video. Đổi sang gemini-3.5-flash
+# / gemini-3-flash / gemini-2.5-flash (chất lượng cao hơn nhưng chỉ ~20 RPD) nếu cần.
+PROMPT_API_MODEL = os.getenv("PROMPT_API_MODEL", "gemini-3.1-flash-lite")
 PROMPT_API_TIMEOUT = max(10, int(os.getenv("PROMPT_API_TIMEOUT", "40")))
+
+# Fallback: chuyển model rồi chuyển provider khi provider chính lỗi/hết quota/thiếu key.
+LLM_FALLBACK_ENABLED = os.getenv("LLM_FALLBACK_ENABLED", "1").strip().lower() not in ("0", "false", "no")
+# Model Gemini dự phòng (cùng URL/KEY, chỉ đổi model). gemini-2.5-flash chất lượng ổn,
+# đã verify chạy thực tế. Để trống nếu không dùng.
+PROMPT_API_FALLBACK_MODEL = os.getenv("PROMPT_API_FALLBACK_MODEL", "gemini-2.5-flash")
+# Provider dự phòng khác (Pollinations miễn phí, không cần key).
+PROMPT_API_FALLBACK_URL = os.getenv("PROMPT_API_FALLBACK_URL", "https://text.pollinations.ai/openai")
+PROMPT_API_FALLBACK_KEY = os.getenv("PROMPT_API_FALLBACK_KEY", "")
+PROMPT_API_FALLBACK_URL_MODEL = os.getenv("PROMPT_API_FALLBACK_URL_MODEL", "openai")
 CAPTION_CHANNEL_PROFILE = os.getenv(
     "CAPTION_CHANNEL_PROFILE",
     "Warm, calm lofi channel. Helpful and natural, never clickbait or keyword-stuffed.",
@@ -214,7 +253,7 @@ PROMPT_PROFILE_DEFAULT = os.getenv("PROMPT_PROFILE_DEFAULT", "auto").strip().low
 PROMPT_CACHE_ENABLED = os.getenv("PROMPT_CACHE_ENABLED", "1").strip().lower() not in ("0", "false", "no")
 PROMPT_CACHE_MAX_ITEMS = max(8, min(int(os.getenv("PROMPT_CACHE_MAX_ITEMS", "128")), 1000))
 PROMPT_DISK_CACHE_ENABLED = os.getenv("PROMPT_DISK_CACHE_ENABLED", "1").strip().lower() not in ("0", "false", "no")
-PROMPT_CACHE_FILE = BASE_DIR / "data" / "prompt_cache.json"
+PROMPT_CACHE_FILE = BASE_DIR / "data" / "cache" / "prompt_cache.json"
 
 # "random": moi anh dung nhan vat moi. "brand": giu nhan vat thuong hieu.
 IMAGE_CHARACTER_MODE = os.getenv("IMAGE_CHARACTER_MODE", "random").strip().lower()

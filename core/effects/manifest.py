@@ -1,4 +1,24 @@
-"""Persistent, repairable metadata registry for local video effects."""
+"""
+AI FILE NOTE - EFFECTS MANIFEST (SỔ ĐĂNG KÝ HIỆU ỨNG VIDEO)
+Chức năng chính:
+- Registry metadata bền vững, tự phục hồi cho các file hiệu ứng video cục bộ (manifest.json).
+- Ghi file atomic (mkstemp + os.replace + fsync) để rerun Streamlit không để lại JSON dở dang.
+- Đối chiếu (reconcile) manifest với file thực trên đĩa: thêm mới, cập nhật, đánh dấu missing, phát hiện trùng theo sha256.
+- Suy luận metadata cho asset cũ (pixabay_/pexels_/built-in) và chuẩn hóa entry.
+Đầu vào chính:
+- effects_dir (thư mục chứa video hiệu ứng); dict metadata khi đăng ký; đường dẫn file hiệu ứng.
+Đầu ra chính:
+- File manifest.json (schema_version, updated_at, effects[]); dict/list bản ghi hiệu ứng; dict thống kê reconcile.
+API được file khác sử dụng:
+- load_manifest(), save_manifest(), register_effect(), reconcile_manifest(), remove_missing_entries(),
+  get_effect_metadata(), list_effect_records(), manifest_path(), sha256_file(); hằng SCHEMA_VERSION, SUPPORTED_EXTENSIONS.
+Phụ thuộc quan trọng:
+- Chỉ thư viện chuẩn: hashlib, json, os, re, shutil, tempfile, time, datetime, pathlib.
+Lưu ý khi sửa:
+- Khi manifest hỏng, KHÔNG chặn app: giữ bản sao manifest.invalid.<ts>.json rồi trả về manifest rỗng.
+- File "effect_off.mp4" luôn được bỏ qua khi quét/reconcile.
+- Đổi cấu trúc dữ liệu nhớ tăng SCHEMA_VERSION; save_manifest tự sort effects theo file_name (lowercase).
+"""
 from __future__ import annotations
 
 import hashlib

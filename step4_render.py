@@ -4,6 +4,7 @@ AI FILE NOTE - STEP 4: SEGMENTED VIDEO RENDERER
 Chức năng chính:
 - Render video Lo-Fi theo từng segment để giảm rủi ro lỗi với video dài.
 - Tạo preview ảnh chuyển động kết hợp video hiệu ứng.
+- PROFILE MÀU: preview, segment và video cuối cùng dùng BT.709 TV range để gần Live View.
 - Dựng chuyển động ảnh, ghép overlay, xử lý audio master và nối các segment bằng FFmpeg.
 - Theo dõi tiến độ/ETA, kiểm tra dung lượng đĩa và xác minh đầu ra bằng manifest.
 - Ghi asset, cache và trạng thái workflow vào SQLite với cơ chế fencing token.
@@ -33,6 +34,13 @@ Lưu ý khi sửa:
 - Encoder: None/"auto" sẽ gọi detect_best_encoder() (test encode NVENC thật, cache theo tiến trình).
 - Không bỏ callback tiến độ hoặc thay thang percent 0.0-1.0 nếu chưa sửa UI.
 - Không thay đổi quy trình segment/concat, fencing token hoặc manifest nếu chưa kiểm thử video dài.
+- LOOP-REUSE (r5.6): khi KHÔNG có chữ động/lyrics và segment_duration là bội số 10s,
+  mọi segment đủ dài giống hệt nhau từng frame -> chỉ render segment 0 rồi lặp lại file đó
+  trong concat list. Nếu thêm filter phụ thuộc thời gian tuyệt đối (theo start_seconds,
+  ngoài rotate chu kỳ 10s), PHẢI tắt hoặc siết điều kiện loop_reuse trong run_step4().
+- r5.7: concat + mux gộp thành 1 lệnh FFmpeg (concat demuxer làm input 0, không còn
+  joined_raw.mp4 trung gian); preset thích ứng (ít segment -> medium/p5, nhiều -> veryfast/p4);
+  số worker song song theo encoder (libx264: 2 để tránh oversubscribe CPU, NVENC: tối đa 3 session).
 """
 import os
 import sys
@@ -59,7 +67,21 @@ from core.runtime.cache_manager import CacheManager
 from core.effects.compositor import build_filter_complex, normalize_effect_settings
 
 logger = logging.getLogger("lofi_automation")
-RENDERER_VERSION = "2026.07.16-r5.0"
+RENDERER_VERSION = "2026.07.18-r5.7-mux-preset"
+
+
+def _bt709_output_args() -> list[str]:
+    """Ép metadata màu thống nhất trên preview, segment và file cuối.
+
+    v5.5: dùng full-range (pc) thay vì tv-range để bản render KHỚP màu với live preview
+    (trình duyệt hiển thị full-range sRGB). Trước đây tv-range làm render tối/xỉn hơn preview.
+    """
+    return [
+        "-colorspace", "bt709",
+        "-color_primaries", "bt709",
+        "-color_trc", "bt709",
+        "-color_range", "pc",
+    ]
 
 # Kết quả dò NVENC được cache theo tiến trình để không test lại mỗi segment.
 _ENCODER_CACHE: dict[str, str] = {}
@@ -325,12 +347,17 @@ def build_effect_preview(
         
     combined_filter = ",".join(filters) if filters else None
     
-    filter_complex = build_filter_complex(
+    effect_guard = (
+        f"[1:v]setpts=PTS-STARTPTS,"
+        f"tpad=stop_mode=clone:stop_duration={float(duration):.3f}[effect_guard];"
+    )
+    filter_complex = effect_guard + build_filter_complex(
         base_filter,
         effect_settings,
         width=1280,
         height=720,
         fps=config.VIDEO_FPS,
+        effect_input="effect_guard",
         text_filter=combined_filter,
     )
 
@@ -343,7 +370,8 @@ def build_effect_preview(
             "-map", "[out]", "-an", "-t", f"{float(duration):.3f}",
             "-c:v", encoder, "-preset", preset,
             "-profile:v", "main", "-level", "4.0",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out_path),
+            "-pix_fmt", "yuv420p", *_bt709_output_args(),
+            "-movflags", "+faststart", str(out_path),
         ]
 
     best = detect_best_encoder()
@@ -388,8 +416,13 @@ def render_video_segment(
     effect_settings: dict | None = None,
     text_profile: dict | None = None,
     total_duration: float | None = None,
+    high_quality: bool = False,
 ):
-    """Render segment và đọc tiến độ thật từ FFmpeg qua -progress pipe:1."""
+    """Render segment và đọc tiến độ thật từ FFmpeg qua -progress pipe:1.
+
+    high_quality=True dùng khi tổng số segment phải encode ít (loop-reuse):
+    preset chậm hơn cho chất lượng tốt hơn cùng bitrate, tổng thời gian vẫn nhỏ.
+    """
     import time
 
     segment_path.parent.mkdir(parents=True, exist_ok=True)
@@ -430,15 +463,28 @@ def render_video_segment(
         
     combined_filter = ",".join(filters) if filters else None
     
-    filter_complex = build_filter_complex(
+    effect_guard = (
+        f"[1:v]setpts=PTS-STARTPTS,"
+        f"tpad=stop_mode=clone:stop_duration={float(duration):.3f}[effect_guard];"
+    )
+    filter_complex = effect_guard + build_filter_complex(
         base_filter,
         effect_settings,
         width=1920,
         height=1080,
         fps=config.VIDEO_FPS,
+        effect_input="effect_guard",
         text_filter=combined_filter,
     )
-    preset = "p1" if encoder == "h264_nvenc" else "ultrafast"
+    # Preset thích ứng: ít segment phải encode (loop-reuse) -> preset chậm, nén tốt hơn
+    # cùng bitrate; nhiều segment (có chữ/lyrics) -> ưu tiên tốc độ nhưng vẫn bỏ ultrafast
+    # vì ultrafast phí bitrate rõ rệt ở 2800k/1080p.
+    # NVENC: encode hầu như không phải nút thắt (filter chạy CPU) nên tối thiểu p4;
+    # p1 chỉ nhanh hơn không đáng kể mà nén kém rõ.
+    if high_quality:
+        preset = "p5" if encoder == "h264_nvenc" else "medium"
+    else:
+        preset = "p4" if encoder == "h264_nvenc" else "veryfast"
     cmd = [
         "ffmpeg", "-y", "-nostats", "-stats_period", "0.25", "-progress", "pipe:1",
         "-loop", "1", "-framerate", str(config.VIDEO_FPS), "-i", image_path.as_posix(),
@@ -446,7 +492,7 @@ def render_video_segment(
         "-filter_complex", filter_complex, "-map", "[out]", "-an",
         "-t", f"{duration:.3f}", "-r", str(config.VIDEO_FPS),
         "-c:v", encoder, "-preset", preset, "-b:v", bitrate,
-        "-pix_fmt", "yuv420p", segment_path.as_posix(),
+        "-pix_fmt", "yuv420p", *_bt709_output_args(), segment_path.as_posix(),
     ]
     logger.info(f"[Render Segment {segment_index}] Start: {start_seconds}s, Duration: {duration}s")
     started = time.monotonic()
@@ -490,7 +536,8 @@ def render_video_segment(
         progress_callback(overall_start, f"Khởi tạo phân đoạn {segment_index + 1}", None)
 
     stream_closed = False
-    while process.poll() is None or not stream_closed:
+    process_done_at: float | None = None  # Thời điểm process kết thúc
+    while True:
         line = None
         try:
             line = progress_queue.get(timeout=0.25)
@@ -545,7 +592,15 @@ def render_video_segment(
             )
             last_emit = now
 
-        if process.poll() is not None and stream_closed:
+        # Ghi nhận thời điểm process kết thúc để có deadline thoát vòng lặp.
+        if process.poll() is not None and process_done_at is None:
+            process_done_at = time.monotonic()
+
+        # Điều kiện thoát: stream đã đóng HOẶC process kết thúc rồi chờ quá 3s
+        # (trường hợp stdout pipe không gửi EOF do flush encoder cuối cùng trên Windows).
+        if stream_closed:
+            break
+        if process_done_at is not None and (time.monotonic() - process_done_at) > 3.0:
             break
 
     if progress_callback:
@@ -563,29 +618,59 @@ def render_video_segment(
     if not segment_path.is_file() or segment_path.stat().st_size < 1024:
         raise RuntimeError(f"Segment {segment_index} không được tạo hợp lệ: {segment_path}")
 
-def process_audio_master(input_audio: Path, ambience_audio: Path, out_path: Path, duration: float, vibe_mode: str = "clean"):
+def process_audio_master(input_audio, ambience_audio: Path, out_path: Path, duration: float,
+                         vibe_mode: str = "clean", remix_settings: dict | None = None):
     """
     Trộn âm thanh nền và chuẩn hóa loudness theo đúng Vibe đã chọn (Clean, Light, Rich) (Mục 503).
+
+    input_audio: Path MỘT bài, hoặc LIST nhiều bài (HM5 -> nối crossfade thành audio-master nguồn).
+    remix_settings: dict tham số remix (HM4). Nếu có -> dùng apply_remix thay apply_lofi_character.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     temp_dir = out_path.parent / "temp_audio"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    
+
     try:
+        # HM5: nhiều bài -> nối crossfade thành 1 bài nguồn trước khi xử lý.
+        if isinstance(input_audio, (list, tuple)):
+            valid = [Path(p) for p in input_audio if Path(p).is_file()]
+            if not valid:
+                raise RuntimeError("Không có bài hợp lệ để dựng audio master.")
+            if len(valid) > 1:
+                combined = temp_dir / "combined_source.m4a"
+                AudioProcessor.concat_tracks(valid, combined, crossfade_seconds=3.0)
+                source_audio = combined
+            else:
+                source_audio = valid[0]
+        else:
+            source_audio = Path(input_audio)
+
         # Đảm bảo âm thanh nền tồn tại (tự sinh bằng code nếu thiếu)
         ambience_pack = AudioProcessor.create_builtin_ambience_pack()
         if not Path(ambience_audio).is_file():
             ambience_audio = ambience_pack.get("rain_ambience", ambience_audio)
         crackle_audio = ambience_pack.get("vinyl_crackle")
 
-        # Áp chất âm lofi (slowed 0.88x + lowpass ấm) cho MỌI vibe trước khi lặp
+        # Áp chất âm: HM4 remix tham số hoá nếu có, ngược lại chất âm lofi mặc định (slowed + lowpass ấm).
         lofi_path = temp_dir / "lofi_character.m4a"
-        AudioProcessor.apply_lofi_character(input_audio, lofi_path)
+        if remix_settings:
+            AudioProcessor.apply_remix(source_audio, lofi_path, remix_settings)
+        else:
+            AudioProcessor.apply_lofi_character(source_audio, lofi_path)
+
+        # duration <= 0 (chế độ nhiều bài / natural length): lấy đúng độ dài bản đã xử lý,
+        # để bước loop/trim bên dưới không lặp thêm mà chỉ giữ nguyên (source == target).
+        if float(duration) <= 0.0:
+            try:
+                duration = float(MediaProbe.probe_media(lofi_path)["duration_seconds"])
+            except Exception:
+                duration = float(config.VIDEO_DURATION_SECONDS)
 
         if vibe_mode == "clean":
-            # Chuẩn hóa rồi lặp đủ thời lượng. Bản cũ chỉ cắt audio nên video dài hơn nhạc bị verifier từ chối.
-            norm_path = temp_dir / "normalized.m4a"
-            AudioProcessor.normalize_audio(lofi_path, norm_path, target_lufs=-15.0)
+            # apply_lofi_character đã gộp dynaudnorm vào filter chain (normalize=True mặc định),
+            # nên không cần bước normalize riêng. Dùng trực tiếp lofi_path để stream_loop.
+            norm_path = lofi_path
+
             cmd = [
                 "ffmpeg", "-y", "-stream_loop", "-1",
                 "-i", norm_path.as_posix(),
@@ -606,32 +691,67 @@ def process_audio_master(input_audio: Path, ambience_audio: Path, out_path: Path
             if result.returncode != 0:
                 details = (result.stderr or "FFmpeg không trả chi tiết").strip().splitlines()[-12:]
                 raise RuntimeError("FFmpeg tạo audio master thất bại: " + " | ".join(details))
+
+            # Xác minh duration audio master thực tế — nếu lệch nhiều so với yêu cầu thì fallback
+            # dùng loop_audio (crossfade) để đảm bảo đúng thời lượng trước khi mux.
+            try:
+                master_probe = MediaProbe.probe_media(out_path)
+                master_dur = master_probe["duration_seconds"]
+            except Exception:
+                master_dur = 0.0
+            if abs(master_dur - duration) > 2.0:
+                logger.warning(
+                    f"[AudioMaster] Audio master stream-loop không đạt thời lượng yêu cầu "
+                    f"({master_dur:.2f}s vs {duration:.2f}s). Fallback sang loop_audio crossfade."
+                )
+                looped_fb = temp_dir / "looped_fallback.m4a"
+                AudioProcessor.loop_audio(lofi_path, looped_fb, target_duration=duration, crossfade_seconds=5.0)
+                import shutil as _shutil
+                _shutil.copy(str(looped_fb), str(out_path))
         else:
             # Lặp nhạc với crossfade 5 giây để đạt đủ độ dài video
             looped_path = temp_dir / "looped.m4a"
             AudioProcessor.loop_audio(lofi_path, looped_path, target_duration=duration, crossfade_seconds=5.0)
 
-            # Phối trộn ambience
-            mixed_path = temp_dir / "mixed.m4a"
-            amb_vol = 0.06 if vibe_mode == "light" else 0.09
-            AudioProcessor.mix_ambience(looped_path, ambience_audio, mixed_path, music_volume=1.0, ambience_volume=amb_vol, duration=duration)
             if vibe_mode == "rich":
-                # Rich: thêm vinyl crackle + hiệu ứng vang aecho
-                crackled_path = temp_dir / "crackled.m4a"
-                if crackle_audio and Path(crackle_audio).is_file():
-                    AudioProcessor.mix_ambience(mixed_path, crackle_audio, crackled_path, music_volume=1.0, ambience_volume=0.05, duration=duration)
-                else:
-                    crackled_path = mixed_path
+                # Rich: Phối hợp nhạc + rain + vinyl crackle + reverb trong DUY NHẤT 1 lần chạy FFmpeg
                 cmd = [
                     "ffmpeg", "-y",
-                    "-i", crackled_path.as_posix(),
-                    "-af", "aecho=0.8:0.88:60:0.4",
+                    "-i", looped_path.as_posix(),
+                ]
+                inputs_count = 1
+                filter_parts = ["[0:a]aecho=0.8:0.88:60:0.4[music]"]
+                amix_inputs = ["[music]"]
+                
+                if Path(ambience_audio).is_file():
+                    cmd.extend(["-stream_loop", "-1", "-i", ambience_audio.as_posix()])
+                    filter_parts.append(f"[{inputs_count}:a]volume=0.09[rain]")
+                    amix_inputs.append("[rain]")
+                    inputs_count += 1
+                    
+                if crackle_audio and Path(crackle_audio).is_file():
+                    cmd.extend(["-stream_loop", "-1", "-i", crackle_audio.as_posix()])
+                    filter_parts.append(f"[{inputs_count}:a]volume=0.05[crackle]")
+                    amix_inputs.append("[crackle]")
+                    inputs_count += 1
+                    
+                amix_str = "".join(amix_inputs)
+                filter_parts.append(f"{amix_str}amix=inputs={inputs_count}:duration=first:dropout_transition=2[out]")
+                filter_complex = ";".join(filter_parts)
+                
+                cmd.extend([
+                    "-filter_complex", filter_complex,
+                    "-map", "[out]",
+                    "-t", f"{duration:.3f}",
                     "-c:a", "aac", "-b:a", config.AUDIO_BITRATE,
                     "-ar", str(config.AUDIO_SAMPLE_RATE),
                     out_path.as_posix()
-                ]
-                _run_ffmpeg(cmd, "FFmpeg thêm hiệu ứng vang (rich) thất bại")
+                ])
+                _run_ffmpeg(cmd, "FFmpeg phối âm và thêm reverb (rich) thất bại")
             else:
+                # Light hoặc Clean: Chỉ cần phối trộn nhạc và rain bằng 1 lệnh
+                mixed_path = temp_dir / "mixed.m4a"
+                AudioProcessor.mix_ambience(looped_path, ambience_audio, mixed_path, music_volume=1.0, ambience_volume=0.06, duration=duration)
                 shutil.copy(str(mixed_path), str(out_path))
                 
     finally:
@@ -642,14 +762,18 @@ def process_audio_master(input_audio: Path, ambience_audio: Path, out_path: Path
             pass
 
 def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: Path,
-              segment_duration: float = 600.0, encoder: str = None, progress_callback=None,
+              segment_duration: float = 60.0, encoder: str = None, progress_callback=None,
               vibe_mode: str = "clean", motion_mode: str = "smooth_zoom",
               parallax_enabled: bool = False, effect_settings: dict | None = None,
-              text_profile: dict | None = None) -> Path:
+              text_profile: dict | None = None, remix_settings: dict | None = None,
+              audio_paths: list | None = None) -> Path:
     """
     Hàm điều phối chính cho quá trình render video phân đoạn.
     encoder=None hoặc "auto": tự dò GPU NVENC, không có thì dùng CPU libx264.
     effect_settings: thông số compositing thống nhất (xem core/effect_compositor.py).
+    remix_settings: dict tham số remix âm thanh (HM4); None -> chất âm lofi mặc định.
+    audio_paths: LIST nhiều bài (HM5) -> nối thành audio-master dài, thời lượng video theo tổng.
+                 Nếu None/1 bài -> dùng audio_path như cũ (thời lượng theo config).
     """
     if parallax_enabled:
         motion_mode = "parallax"
@@ -673,9 +797,14 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
             effect_settings = None
     effect_settings = normalize_effect_settings(effect_settings)
 
-    audio_path = Path(audio_path)
     image_path = Path(image_path)
     effect_path = Path(effect_path)
+    # HM5: gom danh sách bài. audio_paths ưu tiên; nếu không có thì dùng audio_path đơn.
+    track_list = [Path(p) for p in (audio_paths or []) if Path(p).is_file()]
+    is_multi_track = len(track_list) > 1
+    if not track_list:
+        track_list = [Path(audio_path)]
+    audio_path = track_list[0]
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("Không tìm thấy FFmpeg trong PATH.")
     if not audio_path.is_file():
@@ -685,30 +814,62 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
     if not effect_path.is_file():
         raise FileNotFoundError(f"Không tìm thấy file hiệu ứng: {effect_path}")
 
-    total_duration = float(config.VIDEO_DURATION_SECONDS)
     config.OUTPUT_DIR = Path(config.OUTPUT_DIR)
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    _notify_progress(progress_callback, 0.01, "Kiểm tra nguyên liệu")
-    
-    # 1. Kiểm tra dung lượng ổ đĩa
-    if not check_disk_space(config.OUTPUT_DIR, total_duration, config.VIDEO_BITRATE, config.AUDIO_BITRATE):
-        raise ValueError("Ổ đĩa không đủ dung lượng để tiến hành render (Mục 10).")
-        
     project_dir = ProjectManager.get_project_dir(project_id)
     segments_dir = project_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
+    master_audio = segments_dir / "audio_master.m4a"
+
+    _notify_progress(progress_callback, 0.01, "Kiểm tra nguyên liệu")
+
+    # Thời lượng video: mặc định theo config; NHIỀU BÀI -> dựng audio-master trước để lấy độ dài
+    # THẬT (tổng các bài, đã tính chất âm/tempo), rồi cắt video khớp đúng độ dài đó.
+    total_duration = float(config.VIDEO_DURATION_SECONDS)
+    prebuilt_master = False
+    if is_multi_track:
+        _notify_progress(progress_callback, 0.02, f"Nối {len(track_list)} bài thành audio dài")
+        ambience_pre = config.EFFECTS_DIR / "rain_ambience.mp3"
+        process_audio_master(track_list, ambience_pre, master_audio, 0.0,
+                             vibe_mode, remix_settings=remix_settings)
+        try:
+            total_duration = float(MediaProbe.probe_media(master_audio)["duration_seconds"])
+        except Exception:
+            total_duration = float(config.VIDEO_DURATION_SECONDS)
+        prebuilt_master = master_audio.is_file() and total_duration > 1.0
+        logger.info(f"[Render] Chế độ mix {len(track_list)} bài -> video dài {total_duration:.1f}s")
+
+    # 1. Kiểm tra dung lượng ổ đĩa (theo thời lượng thực tế)
+    if not check_disk_space(config.OUTPUT_DIR, total_duration, config.VIDEO_BITRATE, config.AUDIO_BITRATE):
+        raise ValueError("Ổ đĩa không đủ dung lượng để tiến hành render (Mục 10).")
 
     # Chữ ký thông số compositing: đưa vào TÊN segment để đổi hiệu ứng/chữ/chuyển động thì
     # segment cache cũ (theo bộ thông số khác) không bị tái dùng nhầm.
+    # Phải bao gồm ĐỦ những gì preview_key của review_app bao gồm (ảnh nền, file hiệu ứng,
+    # mtime lyrics) để preview và render cuối vô hiệu cache đồng bộ với nhau — trước đây
+    # thiếu 3 thành phần này nên đổi ảnh/hiệu ứng/lyrics vẫn tái dùng segment cũ.
+    lyrics_mtime = 0.0
+    try:
+        from core.text.ass_renderer import get_subtitle_manifest_path
+        _sub_path = get_subtitle_manifest_path(project_id)
+        if _sub_path.is_file():
+            lyrics_mtime = _sub_path.stat().st_mtime
+    except Exception:
+        pass
+    asset_signature = (
+        f"{image_path.resolve()}|{image_path.stat().st_mtime}|"
+        f"{effect_path.resolve()}|{effect_path.stat().st_mtime}|"
+        f"lyrics={lyrics_mtime}|{RENDERER_VERSION}"
+    )
     try:
         from core.effects.compositor import effect_settings_cache_key
         from core.text.provider import text_profile_cache_key
         signature_source = (
             f"{effect_settings_cache_key(effect_settings)}|{motion_mode}|"
-            f"{text_profile_cache_key(text_profile)}"
+            f"{text_profile_cache_key(text_profile)}|{asset_signature}"
         )
     except Exception:
-        signature_source = f"{motion_mode}"
+        signature_source = f"{motion_mode}|{asset_signature}"
     composite_sig = hashlib.sha256(signature_source.encode("utf-8")).hexdigest()[:10]
     # Dọn segment cũ khác chữ ký để không tích rác (không đụng segment đúng chữ ký).
     for stale in segments_dir.glob("segment_*.mp4"):
@@ -720,15 +881,55 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
     if total_duration % segment_duration > 0:
         num_segments += 1
 
+    # --- TỐI ƯU LOOP-REUSE: nội dung video tuần hoàn -> chỉ render 1 segment đầy đủ ---
+    # Ảnh nền tĩnh, rotate có chu kỳ đúng 10s và effect video được reset (setpts=PTS-STARTPTS
+    # + stream_loop) ở đầu MỖI segment, nên mọi segment đủ dài đều giống hệt nhau từng frame,
+    # trừ khi có chữ động/lyrics (ASS dịch mốc thời gian theo segment_start).
+    # Khi đủ điều kiện: render segment 0 một lần rồi liệt kê lặp lại trong concat list
+    # (concat demuxer chấp nhận cùng một file nhiều lần với -c copy) -> video 1 giờ chỉ tốn
+    # công encode ~1 segment thay vì 60, cực quan trọng trên máy render CPU.
+    loop_reuse = False
+    if num_segments > 1 and abs(segment_duration % 10.0) < 1e-6:
+        text_on = bool(
+            text_profile and text_profile.get("enabled")
+            and str(text_profile.get("content") or "").strip()
+        )
+        lyrics_on = False
+        try:
+            from core.text.ass_renderer import get_subtitle_manifest_path, load_subtitle_manifest
+            if get_subtitle_manifest_path(project_id).is_file():
+                _lyrics_manifest = load_subtitle_manifest(project_id)
+                lyrics_on = bool(_lyrics_manifest.get("enabled") and _lyrics_manifest.get("lyrics"))
+        except Exception:
+            lyrics_on = True  # không xác định được -> an toàn: không reuse
+        loop_reuse = not text_on and not lyrics_on
+    if loop_reuse:
+        logger.info(
+            f"[Render] Nội dung tuần hoàn (không chữ/lyrics): render 1 segment "
+            f"{segment_duration:.0f}s và tái dùng cho {num_segments} phân đoạn."
+        )
+
+    # Ít segment phải encode -> dùng preset chất lượng cao (thời gian tổng vẫn nhỏ).
+    high_quality_render = loop_reuse or num_segments <= 2
+
     segment_paths = []
 
     # --- RENDER TỪNG PHÂN ĐOẠN ---
+    from concurrent.futures import ThreadPoolExecutor
+    progress_lock = threading.Lock()
+    progress_tracker = {}
+
     for i in range(num_segments):
         start_sec = i * segment_duration
         dur = min(segment_duration, total_duration - start_sec)
+        # Segment đủ dài tái dùng file của segment 0 (nội dung từng frame giống hệt);
+        # segment cuối ngắn hơn vẫn render riêng.
+        if loop_reuse and i > 0 and abs(dur - segment_duration) < 1e-6:
+            segment_paths.append(segment_paths[0])
+            continue
         seg_path = segments_dir / f"segment_{i}_{composite_sig}.mp4"
         segment_paths.append(seg_path)
-        
+
         # Kiểm tra tính toàn vẹn của segment cũ để bỏ qua (Resume from Checkpoint)
         is_cached = False
         if seg_path.exists():
@@ -740,68 +941,105 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
                 pass
                 
         if is_cached:
+            progress_tracker[i] = 1.0
             logger.info(f"[Render] Reusing cached segment {i} ({seg_path.name})")
-            _notify_progress(
-                progress_callback,
-                0.05 + 0.65 * (i + 1) / num_segments,
-                f"Dùng lại phân đoạn {i + 1}/{num_segments}",
-                0.0,
-            )
         else:
-            actual_encoder = encoder
-            try:
+            progress_tracker[i] = 0.0
+
+    # Khởi chạy cập nhật tiến độ ban đầu. Chia theo số segment THỰC SỰ phải render
+    # (loop-reuse khiến progress_tracker chỉ chứa các segment duy nhất).
+    unique_segments = max(len(progress_tracker), 1)
+    render_start_time = time.monotonic()
+    with progress_lock:
+        completed_cached = sum(1.0 for v in progress_tracker.values() if v == 1.0)
+        _notify_progress(
+            progress_callback,
+            0.05 + 0.65 * (completed_cached / unique_segments),
+            f"Khởi chạy phân đoạn (Đã cache: {int(completed_cached)}/{unique_segments})",
+            0.0,
+        )
+
+    def render_one_segment(idx: int):
+        if progress_tracker[idx] == 1.0:
+            return
+            
+        start_sec = idx * segment_duration
+        dur = min(segment_duration, total_duration - start_sec)
+        seg_path = segment_paths[idx]
+        
+        def local_callback(local_ratio, status_text, eta):
+            with progress_lock:
+                progress_tracker[idx] = local_ratio
+                total_progress = sum(progress_tracker.values()) / unique_segments
+                
+                elapsed = time.monotonic() - render_start_time
+                if total_progress > 0.005:
+                    overall_eta = elapsed * (1.0 - total_progress) / total_progress
+                else:
+                    overall_eta = None
+                    
+                _notify_progress(
+                    progress_callback,
+                    0.05 + 0.65 * total_progress,
+                    f"Dựng hình {int(total_progress * 100)}%",
+                    overall_eta,
+                )
+
+        actual_encoder = encoder
+        try:
+            render_video_segment(
+                project_id, idx, start_sec, dur, image_path, effect_path, seg_path,
+                actual_encoder, config.VIDEO_BITRATE,
+                progress_callback=local_callback,
+                overall_start=0.0,
+                overall_span=1.0,
+                motion_mode=motion_mode,
+                effect_settings=effect_settings,
+                text_profile=text_profile,
+                total_duration=total_duration,
+                high_quality=high_quality_render,
+            )
+        except Exception as e:
+            if actual_encoder == "h264_nvenc":
+                logger.warning(f"[Render Warning] NVENC failed on segment {idx}, fallback to libx264. Error: {e}")
                 render_video_segment(
-                    project_id, i, start_sec, dur, image_path, effect_path, seg_path,
-                    actual_encoder, config.VIDEO_BITRATE,
-                    progress_callback=progress_callback,
-                    overall_start=0.05 + 0.65 * i / num_segments,
-                    overall_span=0.65 / num_segments,
+                    project_id, idx, start_sec, dur, image_path, effect_path, seg_path,
+                    "libx264", config.VIDEO_BITRATE,
+                    progress_callback=local_callback,
+                    overall_start=0.0,
+                    overall_span=1.0,
                     motion_mode=motion_mode,
                     effect_settings=effect_settings,
                     text_profile=text_profile,
                     total_duration=total_duration,
+                    high_quality=high_quality_render,
                 )
-            except Exception as e:
-                if actual_encoder == "h264_nvenc":
-                    logger.warning(f"[Render Warning] NVENC failed on segment {i}, fallback to libx264. Error: {e}")
-                    # NVENC hỏng giữa chừng: ghi nhớ để các segment sau đi thẳng CPU.
-                    _ENCODER_CACHE["encoder"] = "libx264"
-                    encoder = "libx264"
-                    actual_encoder = "libx264"
-                    render_video_segment(
-                        project_id, i, start_sec, dur, image_path, effect_path, seg_path,
-                        actual_encoder, config.VIDEO_BITRATE,
-                        progress_callback=progress_callback,
-                        overall_start=0.05 + 0.65 * i / num_segments,
-                        overall_span=0.65 / num_segments,
-                        motion_mode=motion_mode,
-                        effect_settings=effect_settings,
-                        text_profile=text_profile,
-                        total_duration=total_duration,
-                    )
-                else:
-                    raise e
+            else:
+                raise e
+
+    # Chạy song song các phân đoạn chưa có cache.
+    # libx264 mỗi tiến trình đã dùng toàn bộ core CPU -> chạy 4 ffmpeg cùng lúc chỉ
+    # oversubscribe (chậm hơn + tốn RAM); giữ 2 worker để filter/encode gối đầu nhau.
+    # NVENC giới hạn ~3 session đồng thời trên GPU consumer.
+    segments_to_render = [i for i, v in progress_tracker.items() if v == 0.0]
+    if segments_to_render:
+        if encoder == "h264_nvenc":
+            max_workers = min(3, os.cpu_count() or 4)
+        else:
+            max_workers = 2
+        max_workers = min(max_workers, len(segments_to_render))
+        logger.info(f"[Render] Song song {len(segments_to_render)} phân đoạn với {max_workers} worker...")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(executor.map(render_one_segment, segments_to_render))
                     
 
-    # --- GHÉP CÁC PHÂN ĐOẠN (CONCAT) ---
-    _notify_progress(progress_callback, 0.72, "Ghép các phân đoạn")
-    logger.info("[Render] Concat segment files...")
+    # --- CHUẨN BỊ CONCAT LIST (ghép thật diễn ra ngay trong bước mux, 1 lệnh FFmpeg) ---
+    _notify_progress(progress_callback, 0.72, "Chuẩn bị ghép các phân đoạn")
     concat_list_file = segments_dir / "segments_list.txt"
     with open(concat_list_file, "w", encoding="utf-8") as f:
         for path in segment_paths:
             f.write(f"file '{path.resolve().as_posix()}'\n")
-            
-    joined_video_raw = segments_dir / "joined_raw.mp4"
-    cmd_concat = [
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_list_file.as_posix(),
-        "-c", "copy",
-        joined_video_raw.as_posix()
-    ]
-    _run_ffmpeg(cmd_concat, "FFmpeg ghép các phân đoạn thất bại")
-    
+
     # --- TRỘN & CHUẨN HÓA AUDIO MASTER ---
     _notify_progress(progress_callback, 0.78, "Xử lý âm thanh")
     logger.info("[Render] Preparing audio master...")
@@ -815,12 +1053,18 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
         ]
         _run_ffmpeg(cmd_amb, "FFmpeg tạo ambience mặc định thất bại")
         
-    master_audio = segments_dir / "audio_master.m4a"
-    process_audio_master(audio_path, ambience_audio, master_audio, total_duration, vibe_mode)
+    # master_audio đã được khai báo ở đầu; chế độ nhiều bài đã dựng sẵn (prebuilt_master) -> tái dùng.
+    if prebuilt_master and master_audio.is_file():
+        logger.info("[Render] Tái dùng audio-master đã dựng từ nhiều bài (bỏ qua dựng lại).")
+    else:
+        process_audio_master(audio_path, ambience_audio, master_audio, total_duration,
+                             vibe_mode, remix_settings=remix_settings)
 
-    # --- MUX VIDEO & AUDIO LẦN CUỐI ---
+    # --- CONCAT + MUX VIDEO & AUDIO TRONG MỘT LỆNH ---
+    # Gộp concat demuxer và mux audio vào 1 lần chạy FFmpeg: tránh ghi file trung gian
+    # joined_raw.mp4 (~toàn bộ video ghi ra đĩa thêm 1 lần) trước khi mux.
     _notify_progress(progress_callback, 0.88, "Ghép hình và âm thanh")
-    logger.info("[Render] Muxing final video...")
+    logger.info("[Render] Concat segments + muxing final video...")
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Không ghi đè file đang được Streamlit/OneDrive giữ mở. Mỗi lần render tạo tên mới.
@@ -829,19 +1073,23 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
     temp_final = config.OUTPUT_DIR / f".{project_id}_{timestamp}.muxing.mp4"
 
     def _run_mux(copy_video: bool) -> subprocess.CompletedProcess:
+        # Cờ màu BT.709 chỉ có tác dụng khi re-encode; với -c:v copy bitstream giữ
+        # nguyên cờ màu đã encode đúng ở từng segment.
         video_args = ["-c:v", "copy"] if copy_video else [
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-            "-pix_fmt", "yuv420p",
+            "-pix_fmt", "yuv420p", *_bt709_output_args(),
         ]
         cmd_mux = [
             "ffmpeg", "-y",
-            "-i", joined_video_raw.as_posix(),
+            "-f", "concat", "-safe", "0", "-i", concat_list_file.as_posix(),
             "-i", master_audio.as_posix(),
             "-map", "0:v:0", "-map", "1:a:0",
             *video_args,
             "-c:a", "aac", "-b:a", config.AUDIO_BITRATE,
             "-movflags", "+faststart",
-            "-shortest",
+            # Dùng -t thay -shortest để tránh video bị cắt ngắn khi audio master
+            # bị lỗi duration (ví dụ loudnorm output ngắn hơn kỳ vọng).
+            "-t", f"{total_duration:.3f}",
             temp_final.as_posix(),
         ]
         return subprocess.run(
@@ -872,7 +1120,6 @@ def run_step4(project_id: str, audio_path: Path, image_path: Path, effect_path: 
     temp_final.replace(final_video)
     
     try:
-        joined_video_raw.unlink(missing_ok=True)
         master_audio.unlink(missing_ok=True)
         concat_list_file.unlink(missing_ok=True)
     except Exception:
